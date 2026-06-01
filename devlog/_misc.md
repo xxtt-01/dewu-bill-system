@@ -16,3 +16,4 @@
   1. 增加 `except OSError` 分支，记录 `[type(e).__name__]` + 完整 traceback
   2. 用 PyInstaller 重新打包，输出 `dist/得物对账单_sqlserver 版.exe`
 - **提交:** 1f322f6（OSError 日志修复），8dd6cf0（delivery_time 映射修正）
+- **重新打包:** 已重建 dist/得物对账单_sqlserver 版.exe（132MB，含上述修复）
