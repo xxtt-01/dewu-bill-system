@@ -9,8 +9,10 @@
   5. **窗口关闭线程终止** — 添加 `WM_DELETE_WINDOW` 协议处理器，关闭前暂停自动运行并确认退出
 - **影响范围:** 仅 `得物对账单_sqlserver版.py`
 
-## 2026-06-01 18:30: 修复 OSError 日志缺失，便于诊断 API 连接失败
+## 2026-06-01 18:30: 修复 OSError 日志缺失 + PyInstaller 重新打包
 - **文件:** `得物对账单_sqlserver版.py`
-- **原因:** `fetch_api_data` 的 `except` 只捕获 `RequestException`，OSError 穿透后 tenacity 只显示 `RetryError[...]`，看不到具体错误类型（ConnectionResetError / SSLError 等）
-- **决策:** 增加 `except OSError as e`，记录 `[type(e).__name__]` 和完整调用栈，下次运行日志可明确判断根因
-- **影响范围:** 仅 `得物对账单_sqlserver版.py`
+- **原因:** fetch_api_data 的 except 漏捕 OSError，导致无法诊断得物 API 连接失败
+- **决策:**
+  1. 增加 `except OSError` 分支，记录 `[type(e).__name__]` + 完整 traceback
+  2. 用 PyInstaller 重新打包，输出 `dist/得物对账单_sqlserver 版.exe`
+- **提交:** 1f322f6（OSError 日志修复），8dd6cf0（delivery_time 映射修正）
