@@ -8,3 +8,9 @@
   4. **`auto_run` 动态类型** — `type('AutoRun', ...)` → 正式 `class AutoRun` 定义，消除每次 `main_gui()` 调用创建新匿名类的泄漏
   5. **窗口关闭线程终止** — 添加 `WM_DELETE_WINDOW` 协议处理器，关闭前暂停自动运行并确认退出
 - **影响范围:** 仅 `得物对账单_sqlserver版.py`
+
+## 2026-06-01 18:30: 修复 OSError 日志缺失，便于诊断 API 连接失败
+- **文件:** `得物对账单_sqlserver版.py`
+- **原因:** `fetch_api_data` 的 `except` 只捕获 `RequestException`，OSError 穿透后 tenacity 只显示 `RetryError[...]`，看不到具体错误类型（ConnectionResetError / SSLError 等）
+- **决策:** 增加 `except OSError as e`，记录 `[type(e).__name__]` 和完整调用栈，下次运行日志可明确判断根因
+- **影响范围:** 仅 `得物对账单_sqlserver版.py`

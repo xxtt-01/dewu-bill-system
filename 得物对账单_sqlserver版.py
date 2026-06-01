@@ -181,6 +181,9 @@ def fetch_api_data(params: dict, credential: AppCredential) -> dict:
     except requests.exceptions.RequestException as e:
         logging.error(f"API请求失败 [{credential.cred_id}]: {str(e)}")
         raise
+    except OSError as e:
+        logging.error(f"API网络连接错误 [{credential.cred_id}]: [{type(e).__name__}] {str(e)}", exc_info=True)
+        raise
 
 def parse_date(date_str: str) -> datetime:
     """智能日期解析"""
