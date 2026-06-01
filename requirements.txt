@@ -1,0 +1,7 @@
+# 得物对账单系统依赖包
+requests==2.32.3
+pandas==2.2.3
+openpyxl==3.1.5
+pyodbc==5.1.0
+tenacity==9.0.0
+pyinstaller==6.12.0
