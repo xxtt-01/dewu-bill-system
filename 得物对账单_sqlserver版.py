@@ -965,7 +965,7 @@ def import_sales_orders(cursor, data: pd.DataFrame, shop_name: str):
         "订单基础信息出价时间出价时间": "ask_time",
         "订单基础信息订单创建时间订单创建时间": "order_creation_time",
         "订单基础信息支付时间支付时间": "payment_time",
-        "订单基础信息业务时间业务时间": "delivery_time",
+        "订单基础信息发货时间发货时间": "delivery_time",
 
         # 平台服务费信息（一口价）
         "平台服务费信息（一口价）是否参加活动是否参加活动": "is_participating_in_activity_ykj",
