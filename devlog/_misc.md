@@ -84,3 +84,9 @@
   2. `time.sleep(N)` → `sleep_cancellable(N)`，每 1 秒检查暂停状态，点击暂停立即停止
   3. 异常后不再终止循环，等 60 秒自动重试
 - **影响范围:** 自动循环行为改善，不影响手动操作
+
+## 2026-06-09 23:33: 重新打包，程序名优化为 DewuBillSystem
+- **文件:** `DewuBillSystem.exe`
+- **原因:** 旧包名 `得物对账单_sqlserver 版.exe` 含空格和冗余信息。重新打包清理旧构建，优化命名
+- **决策:** `DewuBillSystem.exe`（英文名避免路径编码问题，简洁清晰）
+- **打包参数:** `--onefile --windowed`，含全部 hidden-imports
