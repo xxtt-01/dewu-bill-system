@@ -937,7 +937,7 @@ def import_bills(root, update_log):
                         workbook.active = 0
 
                 shop_name = os.path.basename(os.path.dirname(src_path))
-                bill_no = os.path.basename(src_path).split('-')[0]
+                bill_no = os.path.basename(src_path).replace('.xlsx', '')
 
                 with DBConnection() as cursor:
                     if check_if_imported(cursor, bill_no):
@@ -984,12 +984,16 @@ def extract_bill_period_from_file(file_path: str) -> str:
     """从 _tiqu.xlsx 的账单总览 sheet 提取账单起止时间"""
     try:
         overview = pd.read_excel(file_path, sheet_name='账单总览', header=None)
-        # 结构: Row0=扁平表头, Row1=数据行, Col 3=账单起止时间
-        val = overview.iloc[1, 3]
+        if len(overview) < 2:
+            return ''
+        # 用列名取值代替硬编码索引，避免得物调整列顺序
+        overview.columns = overview.iloc[0]
+        data = overview.iloc[1:]
+        val = data.iloc[0].get('账单起止时间账单起止时间', '')
         if pd.notna(val):
             return str(val).strip()
-    except Exception:
-        pass
+    except Exception as e:
+        logging.warning(f"提取账单起止时间失败: {e}")
     return ''
 
 
@@ -1099,6 +1103,7 @@ def import_sales_orders(cursor, data: pd.DataFrame, shop_name: str, bill_no: str
     business_time_col = '订单基础信息业务时间业务时间'
     has_business_time = business_time_col in data.columns
     delivery_pos = list(field_mapping.values()).index('delivery_time') if 'delivery_time' in field_mapping.values() else -1
+    fallback_count = 0
     if has_business_time and delivery_pos >= 0:
         logging.info("检测到业务时间列，发货时间为空时将自动降级使用业务时间")
 
@@ -1117,11 +1122,15 @@ def import_sales_orders(cursor, data: pd.DataFrame, shop_name: str, bill_no: str
             bt_val = row.get(business_time_col, '')
             if pd.notna(bt_val) and str(bt_val).strip() not in ('', 'NaN', 'nan', 'NAN', 'None', 'none', 'NONE'):
                 record[delivery_pos] = bt_val
+                fallback_count += 1
 
         record.append(shop_name)
         record.append(bill_no)
         record.append(bill_period)
         records.append(tuple(record))
+
+    if fallback_count > 0:
+        logging.info(f"发货时间降级: {fallback_count}/{total_records} 行使用了业务时间")
 
     # 分批插入，每 500 条提交一次，避免事务过长导致连接超时
     BATCH_SIZE = 500
@@ -1233,6 +1242,7 @@ def import_refund_orders(cursor, data: pd.DataFrame, shop_name: str, bill_no: st
     business_time_col = '订单基础信息业务时间业务时间'
     has_business_time = business_time_col in data.columns
     delivery_pos = list(field_mapping.values()).index('delivery_time') if 'delivery_time' in field_mapping.values() else -1
+    fallback_count = 0
     if has_business_time and delivery_pos >= 0:
         logging.info("检测到业务时间列，发货时间为空时将自动降级使用业务时间")
 
@@ -1251,11 +1261,15 @@ def import_refund_orders(cursor, data: pd.DataFrame, shop_name: str, bill_no: st
             bt_val = row.get(business_time_col, '')
             if pd.notna(bt_val) and str(bt_val).strip() not in ('', 'NaN', 'nan', 'NAN', 'None', 'none', 'NONE'):
                 record[delivery_pos] = bt_val
+                fallback_count += 1
 
         record.append(shop_name)
         record.append(bill_no)
         record.append(bill_period)
         records.append(tuple(record))
+
+    if fallback_count > 0:
+        logging.info(f"发货时间降级: {fallback_count}/{total_records} 行使用了业务时间")
 
     # 分批插入，每 500 条提交一次，避免事务过长导致连接超时
     BATCH_SIZE = 500
