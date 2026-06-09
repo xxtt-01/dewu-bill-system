@@ -1095,6 +1095,13 @@ def import_sales_orders(cursor, data: pd.DataFrame, shop_name: str, bill_no: str
     placeholders = ", ".join(["?"] * (len(field_mapping) + 3))
     insert_sql = f"INSERT INTO dw_dzd_xs ({columns}) VALUES ({placeholders})"
 
+    # 发货时间降级：检测业务时间列是否存在
+    business_time_col = '订单基础信息业务时间业务时间'
+    has_business_time = business_time_col in data.columns
+    delivery_pos = list(field_mapping.values()).index('delivery_time') if 'delivery_time' in field_mapping.values() else -1
+    if has_business_time and delivery_pos >= 0:
+        logging.info("检测到业务时间列，发货时间为空时将自动降级使用业务时间")
+
     records = []
     for _, row in data.iterrows():
         record = []
@@ -1104,6 +1111,13 @@ def import_sales_orders(cursor, data: pd.DataFrame, shop_name: str, bill_no: str
                 record.append(None)
             else:
                 record.append(value)
+
+        # 发货时间降级：如果为空且有业务时间列，用业务时间填充
+        if delivery_pos >= 0 and record[delivery_pos] in (None, '') and has_business_time:
+            bt_val = row.get(business_time_col, '')
+            if pd.notna(bt_val) and str(bt_val).strip() not in ('', 'NaN', 'nan', 'NAN', 'None', 'none', 'NONE'):
+                record[delivery_pos] = bt_val
+
         record.append(shop_name)
         record.append(bill_no)
         record.append(bill_period)
@@ -1215,6 +1229,13 @@ def import_refund_orders(cursor, data: pd.DataFrame, shop_name: str, bill_no: st
     placeholders = ", ".join(["?"] * (len(field_mapping) + 3))
     insert_sql = f"INSERT INTO dw_dzd_thtk ({columns}) VALUES ({placeholders})"
 
+    # 发货时间降级：检测业务时间列是否存在
+    business_time_col = '订单基础信息业务时间业务时间'
+    has_business_time = business_time_col in data.columns
+    delivery_pos = list(field_mapping.values()).index('delivery_time') if 'delivery_time' in field_mapping.values() else -1
+    if has_business_time and delivery_pos >= 0:
+        logging.info("检测到业务时间列，发货时间为空时将自动降级使用业务时间")
+
     records = []
     for _, row in data.iterrows():
         record = []
@@ -1224,6 +1245,13 @@ def import_refund_orders(cursor, data: pd.DataFrame, shop_name: str, bill_no: st
                 record.append(None)
             else:
                 record.append(value)
+
+        # 发货时间降级：如果为空且有业务时间列，用业务时间填充
+        if delivery_pos >= 0 and record[delivery_pos] in (None, '') and has_business_time:
+            bt_val = row.get(business_time_col, '')
+            if pd.notna(bt_val) and str(bt_val).strip() not in ('', 'NaN', 'nan', 'NAN', 'None', 'none', 'NONE'):
+                record[delivery_pos] = bt_val
+
         record.append(shop_name)
         record.append(bill_no)
         record.append(bill_period)
