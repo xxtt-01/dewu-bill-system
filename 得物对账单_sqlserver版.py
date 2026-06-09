@@ -961,7 +961,7 @@ def import_bills(root, update_log):
                 error_msg = f"处理失败 {src_path}: {str(e)}"
                 logging.error(error_msg, exc_info=True)
                 update_log(f"失败: {src_path} - {str(e)}")
-                raise RuntimeError(f"文件处理失败: {src_path}") from e
+                continue
 
         logging.info(f"=== 流程结束，共处理 {len(all_files)} 个文件 ===")
         update_log(f"=== 流程结束，共处理 {len(all_files)} 个文件 ===")
