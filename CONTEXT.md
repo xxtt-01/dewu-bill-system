@@ -22,29 +22,38 @@
 | `dw_dzd_bill_import_records` | 旧导入记录跟踪表（遗留，当前流程未调用） |
 | `dw_dzd_xs` | 销售订单明细表：存储所有「销售订单」sheet 的行级数据 |
 | `dw_dzd_thtk` | 退货退款订单明细表：存储所有「退货退款订单」sheet 的行级数据 |
+| `dw_dzd_bill_overview` | 账单总览表：每账单一行，存储「账单总览」sheet 的汇总数据（23 个金额/状态字段，含 sp_addextendedproperty 中文注释） |
 
 ### 数据流阶段
 | 阶段 | 操作 | 输入 | 输出 |
 |------|------|------|------|
 | **① 下载账单** | API 拉取账单列表 → 存入 `dw_dwd_bill_records` → 下载 Excel | 得物 API | `downloads/{shop}/{bill_no}.xlsx` |
-| **② 账单处理(提数)** | 提取 Excel 中「销售订单」「退货退款订单」两个 sheet | 原始 xlsx | `tiqu/{shop}/{bill_no}_tiqu.xlsx` |
-| **③ 账单入库** | 解析 tiqu 文件 → 写入 `dw_dzd_xs` / `dw_dzd_thtk` | tiqu xlsx | 数据库记录 |
+| **② 账单处理(提数)** | 提取 Excel 中「账单总览」「销售订单」「退货退款订单」三个 sheet | 原始 xlsx | `tiqu/{shop}/{bill_no}_tiqu.xlsx` |
+| **③ 账单入库** | 解析 tiqu 文件 → 写入 `dw_dzd_bill_overview` / `dw_dzd_xs` / `dw_dzd_thtk` | tiqu xlsx | 数据库记录 |
 
 ### 数据表字段结构
 
+#### 账单总览表 `dw_dzd_bill_overview`
+存储「账单总览」sheet 中 Row 4 的概要数据（每账单一行）：
+- `bill_no` — 账单编号（按此字段去重）
+- `company_name` — 公司名称
+- `settlement_cycle` — 结算周期（周结）
+- `bill_period` — 账单起止时间
+- `product_transaction_amount` — 本期商品交易金额
+- `platform_service_fee` — 本期交易类平台服务费金额
+- `distribution_service_fee` — 分销服务费
+- `advance_payment_recovery` / `seller_subsidy_amount` / `adjustment_item` 等
+- `other_*` — 其他非交易类费用（来自「本期结算其他项费用」子列）
+- `price_reduction_refund` / `price_reduction_subsidy` — 售中降价
+- `total_payable_amount` — 应结总金额
+- `settlement_status` — 结算状态
+- `create_time` — 入库时间
+
 #### 销售订单表 `dw_dzd_xs` 字段来源
-Excel 表头由得物多行表头（分组行+列名行+子列名行）纵向拼接而成，格式为 `{分组}{字段名}{字段名}`：
-- `订单基础信息{字段}{字段}` — 订单号、类型、商品名、货号、数量、规格、金额等
-- `平台服务费信息（一口价）{字段}{字段}` — 一口价模式下的活动、费率、折扣、返利等
-- `平台服务费信息技术服务费{字段}` — 技术服务费的活动/费率/优惠
-- `平台服务费信息操作服务费信息{字段}` — 操作费及包装费明细
-- `平台服务费信息操作类费用{字段}` — 查验、鉴别、包装、转账、品牌、客服费用
-- `平台服务费信息{其他}{字段}` — 售后无忧、退运、分销服务费
-- `结算信息{字段}{字段}` — 预付款收回、补贴、降价、应结金额等
-- `备注信息备注内容备注内容` — 备注（当前未入库）
+多行表头拼接格式 `{分组}{字段名}{字段名}`，含 `bill_no`、`bill_period` 两个新增字段。
 
 #### 退货退款订单表 `dw_dzd_thtk` 字段来源
-类似拼接结构，增加 `退货信息{字段}{字段}`，无「分销服务费」和「结算渠道」。
+同拼接结构，含 `bill_no`、`bill_period` 两个新增字段。
 
 ### 需要关注的点
 - `import_bills`（阶段②）中的 `data.iloc[3:]` 用于跳过得物文件的多行表头：第 1 行说明 → `iloc[1:]` 去除；第 2-4 行（分组+列名+子列名）→ 合并为扁平表头；`iloc[3:]` 保留合并后的表头+数据

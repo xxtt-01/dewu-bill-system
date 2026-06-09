@@ -494,13 +494,16 @@ def process_import(root, update_log, text_handler=None):
                             xls = pd.ExcelFile(file_path)
                             imported = False
 
+                            # 从账单总览 sheet 提取 bill_period
+                            bill_period = extract_bill_period_from_file(file_path)
+
                             if '销售订单' in xls.sheet_names:
                                 # 带重试的销售订单导入
                                 retry_count = 0
                                 max_retries = 3
                                 while retry_count < max_retries:
                                     try:
-                                        import_sales_orders_from_file(file_path, shop_name)
+                                        import_sales_orders_from_file(file_path, shop_name, bill_no, bill_period)
                                         imported = True
                                         break
                                     except pyodbc.Error as e:
@@ -518,7 +521,25 @@ def process_import(root, update_log, text_handler=None):
                                 max_retries = 3
                                 while retry_count < max_retries:
                                     try:
-                                        import_refund_orders_from_file(file_path, shop_name)
+                                        import_refund_orders_from_file(file_path, shop_name, bill_no, bill_period)
+                                        imported = True
+                                        break
+                                    except pyodbc.Error as e:
+                                        if "08S01" in str(e) and retry_count < max_retries - 1:
+                                            retry_count += 1
+                                            logging.warning(f"检测到连接断开 ({retry_count}/{max_retries})，尝试重新连接...")
+                                            update_log(f"检测到连接断开，5 秒后重试 ({retry_count}/{max_retries})...")
+                                            time.sleep(5)
+                                        else:
+                                            raise
+
+                            if '账单总览' in xls.sheet_names:
+                                # 带重试的账单总览导入
+                                retry_count = 0
+                                max_retries = 3
+                                while retry_count < max_retries:
+                                    try:
+                                        import_bill_overview_from_file(file_path, shop_name)
                                         imported = True
                                         break
                                     except pyodbc.Error as e:
@@ -549,21 +570,21 @@ def process_import(root, update_log, text_handler=None):
         logging.error(f"未预期错误: {str(e)}", exc_info=True)
         update_log(f"处理失败: {str(e)}")
 
-def import_sales_orders_from_file(file_path, shop_name):
+def import_sales_orders_from_file(file_path, shop_name, bill_no='', bill_period=''):
     """从文件导入销售订单"""
     data = pd.read_excel(file_path, sheet_name='销售订单')
     data = data.fillna('').replace(['NaN', 'nan', 'NAN', 'None', 'none', 'NONE'], '')
 
     with DBConnection() as cursor:
-        import_sales_orders(cursor, data, shop_name)
+        import_sales_orders(cursor, data, shop_name, bill_no, bill_period)
 
-def import_refund_orders_from_file(file_path, shop_name):
+def import_refund_orders_from_file(file_path, shop_name, bill_no='', bill_period=''):
     """从文件导入退货退款订单"""
     data = pd.read_excel(file_path, sheet_name='退货退款订单')
     data = data.fillna('').replace(['NaN', 'nan', 'NAN', 'None', 'none', 'NONE'], '')
 
     with DBConnection() as cursor:
-        import_refund_orders(cursor, data, shop_name)
+        import_refund_orders(cursor, data, shop_name, bill_no, bill_period)
 
 def process_import_with_logging(root, update_log, text_handler=None):
     """运行账单入库流程并更新日志"""
@@ -847,7 +868,7 @@ def import_bills(root, update_log):
         logging.info("=== 本地账单导入流程启动 ===")
         update_log("本地账单导入流程启动...")
 
-        SHEETS_TO_KEEP = ['销售订单', '退货退款订单']
+        SHEETS_TO_KEEP = ['账单总览', '销售订单', '退货退款订单']
 
         all_files = []
         for shop_folder in os.listdir(DOWNLOAD_DIR):
@@ -886,15 +907,28 @@ def import_bills(root, update_log):
 
                         for sheet_name, data in sheets_to_process.items():
                             data = data.iloc[1:]
-                            if len(data) >= 3:
-                                summary_row = data.iloc[:3].fillna('').astype(str).agg(''.join, axis=0)
+                            if sheet_name == '账单总览':
+                                # 只保留前3行: [表头行, 子表头行, 数据行]，去掉结算渠道
+                                data = data.iloc[:3].reset_index(drop=True)
+                                # 合并两行表头为扁平表头（与销售订单的拼接逻辑一致）
+                                flat_header = data.iloc[:2].fillna('').astype(str).agg(''.join, axis=0)
                                 data = pd.concat([
-                                    data.iloc[:3],
-                                    pd.DataFrame([summary_row]),
-                                    data.iloc[3:]
+                                    data.iloc[:2],
+                                    pd.DataFrame([flat_header]),
+                                    data.iloc[2:]
                                 ]).reset_index(drop=True)
+                                data = data.iloc[2:]
+                            else:
+                                if len(data) >= 3:
+                                    summary_row = data.iloc[:3].fillna('').astype(str).agg(''.join, axis=0)
+                                    data = pd.concat([
+                                        data.iloc[:3],
+                                        pd.DataFrame([summary_row]),
+                                        data.iloc[3:]
+                                    ]).reset_index(drop=True)
 
-                            data = data.iloc[3:]
+                                data = data.iloc[3:]
+
                             data.to_excel(writer, sheet_name=sheet_name, index=False, header=False)
 
                     workbook = writer.book
@@ -945,7 +979,21 @@ def check_if_imported_new(cursor, bill_no: str) -> bool:
     count = cursor.fetchone()[0]
     return count > 0
 
-def import_sales_orders(cursor, data: pd.DataFrame, shop_name: str):
+
+def extract_bill_period_from_file(file_path: str) -> str:
+    """从 _tiqu.xlsx 的账单总览 sheet 提取账单起止时间"""
+    try:
+        overview = pd.read_excel(file_path, sheet_name='账单总览', header=None)
+        # 结构: Row0=扁平表头, Row1=数据行, Col 3=账单起止时间
+        val = overview.iloc[1, 3]
+        if pd.notna(val):
+            return str(val).strip()
+    except Exception:
+        pass
+    return ''
+
+
+def import_sales_orders(cursor, data: pd.DataFrame, shop_name: str, bill_no: str = '', bill_period: str = ''):
     """导入销售订单数据"""
     data = data.fillna('').replace(['NaN', 'nan', 'NAN', 'None', 'none', 'NONE'], '')
 
@@ -1043,8 +1091,8 @@ def import_sales_orders(cursor, data: pd.DataFrame, shop_name: str):
         "结算信息结算渠道结算渠道": "settlement_channel"
     }
 
-    columns = ", ".join(field_mapping.values()) + ", ZH"
-    placeholders = ", ".join(["?"] * (len(field_mapping) + 1))
+    columns = ", ".join(field_mapping.values()) + ", ZH, bill_no, bill_period"
+    placeholders = ", ".join(["?"] * (len(field_mapping) + 3))
     insert_sql = f"INSERT INTO dw_dzd_xs ({columns}) VALUES ({placeholders})"
 
     records = []
@@ -1057,26 +1105,27 @@ def import_sales_orders(cursor, data: pd.DataFrame, shop_name: str):
             else:
                 record.append(value)
         record.append(shop_name)
+        record.append(bill_no)
+        record.append(bill_period)
         records.append(tuple(record))
 
     # 分批插入，每 500 条提交一次，避免事务过长导致连接超时
     BATCH_SIZE = 500
     total_records = len(records)
-    
+
     for i in range(0, total_records, BATCH_SIZE):
         batch = records[i:i+BATCH_SIZE]
         cursor.executemany(insert_sql, batch)
-        
+
         # 每批提交后立即 commit，避免事务过长
-        if i + BATCH_SIZE <= total_records:
-            cursor.connection.commit()
-        
+        cursor.connection.commit()
+
         # 记录进度
         processed = min(i + BATCH_SIZE, total_records)
         if processed % 1000 == 0 or processed == total_records:
             logging.info(f"已插入 {processed}/{total_records} 条销售订单记录")
 
-def import_refund_orders(cursor, data: pd.DataFrame, shop_name: str):
+def import_refund_orders(cursor, data: pd.DataFrame, shop_name: str, bill_no: str = '', bill_period: str = ''):
     """导入退货退款订单数据"""
     data = data.fillna('').replace(['NaN', 'nan', 'NAN', 'None', 'none', 'NONE'], '')
 
@@ -1162,8 +1211,8 @@ def import_refund_orders(cursor, data: pd.DataFrame, shop_name: str):
         "退货信息收款账期收款账期": "payment_period"
     }
 
-    columns = ", ".join(field_mapping.values()) + ", ZH"
-    placeholders = ", ".join(["?"] * (len(field_mapping) + 1))
+    columns = ", ".join(field_mapping.values()) + ", ZH, bill_no, bill_period"
+    placeholders = ", ".join(["?"] * (len(field_mapping) + 3))
     insert_sql = f"INSERT INTO dw_dzd_thtk ({columns}) VALUES ({placeholders})"
 
     records = []
@@ -1176,24 +1225,103 @@ def import_refund_orders(cursor, data: pd.DataFrame, shop_name: str):
             else:
                 record.append(value)
         record.append(shop_name)
+        record.append(bill_no)
+        record.append(bill_period)
         records.append(tuple(record))
 
     # 分批插入，每 500 条提交一次，避免事务过长导致连接超时
     BATCH_SIZE = 500
     total_records = len(records)
-    
+
     for i in range(0, total_records, BATCH_SIZE):
         batch = records[i:i+BATCH_SIZE]
         cursor.executemany(insert_sql, batch)
-        
+
         # 每批提交后立即 commit，避免事务过长
-        if i + BATCH_SIZE <= total_records:
-            cursor.connection.commit()
-        
+        cursor.connection.commit()
+
         # 记录进度
         processed = min(i + BATCH_SIZE, total_records)
         if processed % 1000 == 0 or processed == total_records:
             logging.info(f"已插入 {processed}/{total_records} 条退货退款订单记录")
+
+
+# ============================================================
+# 账单总览 sheet 字段映射 → dw_dzd_bill_overview
+# Excel 表头为两行拼接格式（与销售订单一致）：{行2}{行3}
+# 例如 "账单编号"+"账单编号" = "账单编号账单编号"
+# ============================================================
+BILL_OVERVIEW_FIELD_MAPPING = {
+    '账单编号账单编号': 'bill_no',
+    '公司名称公司名称': 'company_name',
+    '结算周期结算周期': 'settlement_cycle',
+    '账单起止时间账单起止时间': 'bill_period',
+    '对账单更新时间对账单更新时间': 'update_time_desc',
+    '本期商品交易金额本期商品交易金额': 'product_transaction_amount',
+    '本期交易类平台服务费金额本期交易类平台服务费金额': 'platform_service_fee',
+    '分销服务费分销服务费': 'distribution_service_fee',
+    '平台预付款收回金额平台预付款收回金额': 'advance_payment_recovery',
+    '卖家补贴金额卖家补贴金额': 'seller_subsidy_amount',
+    '调整项调整项': 'adjustment_item',
+    '卖家退运服务费卖家退运服务费': 'seller_return_shipping_fee',
+    '售后无忧售后无忧': 'after_sales_service',
+    '以旧换新补贴金额以旧换新补贴金额': 'trade_in_subsidy_amount',
+    '本期结算其他项费用其他非交易类应收商品金额': 'other_non_transaction_receivable',
+    '本期结算其他项费用其他非交易类平台费用': 'other_non_transaction_platform_fee',
+    '本期结算其他项费用平台预付款收回金额': 'other_advance_payment_recovery',
+    '本期结算其他项费用其他非交易类应结金额': 'other_non_transaction_settlement',
+    '本期结算其他项费用扣减其他费用': 'other_deductions',
+    '售中降价(退款)售中降价(退款)': 'price_reduction_refund',
+    '售中降价(退津贴)售中降价(退津贴)': 'price_reduction_subsidy',
+    '应结总金额应结总金额': 'total_payable_amount',
+    '结算状态结算状态': 'settlement_status',
+}
+
+
+def import_bill_overview(cursor, data: pd.DataFrame, shop_name: str):
+    """将账单总览数据插入 dw_dzd_bill_overview"""
+    data = data.fillna('').replace(['NaN', 'nan', 'NAN', 'None', 'none', 'NONE'], '')
+    field_mapping = BILL_OVERVIEW_FIELD_MAPPING
+
+    # 从扁平表头中提取 data row
+    # data 结构: Row0=扁平表头, Row1=数据行
+    data_row = data.iloc[1:2].copy()
+    data_row.columns = data.iloc[0]
+
+    # 拼装记录
+    record = []
+    for excel_header, db_field in field_mapping.items():
+        value = data_row.iloc[0].get(excel_header, '')
+        if pd.isna(value) or str(value).strip() in ('', 'NaN', 'nan', 'NAN', 'None', 'none', 'NONE'):
+            record.append(None)
+        else:
+            record.append(value)
+    record.append(shop_name)
+
+    # 检查是否已存在（按 bill_no 去重）
+    bill_no = record[0]  # bill_no 是映射的第一个字段
+    if bill_no:
+        cursor.execute("SELECT COUNT(1) FROM dw_dzd_bill_overview WHERE bill_no = ?", (bill_no,))
+        if cursor.fetchone()[0] > 0:
+            logging.info(f"账单总览 {bill_no} 已存在，跳过")
+            return
+
+    columns = ", ".join(field_mapping.values()) + ", ZH"
+    placeholders = ", ".join(["?"] * (len(field_mapping) + 1))
+    insert_sql = f"INSERT INTO dw_dzd_bill_overview ({columns}) VALUES ({placeholders})"
+
+    cursor.execute(insert_sql, tuple(record))
+    logging.info(f"账单总览 {bill_no} 入库成功")
+
+
+def import_bill_overview_from_file(file_path: str, shop_name: str):
+    """从 _tiqu.xlsx 的账单总览 sheet 读取并入库"""
+    data = pd.read_excel(file_path, sheet_name='账单总览', header=None)
+    data = data.fillna('').replace(['NaN', 'nan', 'NAN', 'None', 'none', 'NONE'], '')
+
+    with DBConnection() as cursor:
+        import_bill_overview(cursor, data, shop_name)
+
 
 def record_import(cursor, bill_no: str, shop_name: str):
     """记录账单导入信息"""

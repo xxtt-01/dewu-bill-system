@@ -17,3 +17,17 @@
   2. 用 PyInstaller 重新打包，输出 `dist/得物对账单_sqlserver 版.exe`
 - **提交:** 1f322f6（OSError 日志修复），8dd6cf0（delivery_time 映射修正）
 - **重新打包:** 已重建 dist/得物对账单_sqlserver 版.exe（132MB，含上述修复）
+
+## 2026-06-09 16:00: 新增账单总览提取入库 + 扩展字段
+- **文件:**
+  - `得物对账单_sqlserver版.py`
+  - `数据库迁移_20260609_账单总览.sql`（新建）
+  - `CONTEXT.md`
+- **原因:** 需要在账单处理流程中提取「账单总览」sheet 并存储到数据库；同时在销售/退款订单表中记录所属账单信息
+- **决策:**
+  1. **新建表 `dw_dzd_bill_overview`** — 存储每份账单的汇总概要（23 个字段），用 `sp_addextendedproperty` 加中文注释
+  2. **扩展 `dw_dzd_xs` / `dw_dzd_thtk`** — 各追加 `bill_no`（账单编号）和 `bill_period`（账单起止时间），方便查询时知道订单属于哪个账单
+  3. **账单总览表按 `bill_no` 去重** — 同一账单多次入库不会重复插入
+  4. **提数阶段（import_bills）** — `SHEETS_TO_KEEP` 增加「账单总览」，用与销售订单一致的 2 行表头拼接逻辑处理
+  5. **入库阶段（process_import）** — `bill_period` 从账单总览 sheet 提取，传递给销售/退款订单的导入函数
+- **影响范围:** 已有数据不受影响（新增字段有默认空值），新处理的账单会完整填充
