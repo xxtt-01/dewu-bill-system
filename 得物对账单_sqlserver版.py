@@ -937,13 +937,6 @@ def import_bills(root, update_log):
                         workbook.active = 0
 
                 shop_name = os.path.basename(os.path.dirname(src_path))
-                bill_no = os.path.basename(src_path).replace('.xlsx', '')
-
-                with DBConnection() as cursor:
-                    if check_if_imported(cursor, bill_no):
-                        logging.info(f"账单 {bill_no} 已经导入，跳过")
-                        update_log(f"账单 {bill_no} 已经导入，跳过")
-                        continue
 
                 logging.info(f"文件处理完成: {src_path} -> {dest_path}")
                 update_log(f"文件处理完成: {src_path} -> {dest_path}")

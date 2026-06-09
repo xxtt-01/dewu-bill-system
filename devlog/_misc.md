@@ -50,3 +50,12 @@
   2. **`import_bills` 中 bill_no 截断** — `split('-')[0]` 只能取到日期前缀，改为 `.replace('.xlsx', '')` 取完整编号
   3. **降级计数器** — 在销售订单和退款订单中记录实际触发了多少行的发货时间降级，便于日志排查
 - **影响范围:** 仅代码健壮性提升，业务逻辑不变
+
+## 2026-06-09 17:45: 清理 import_bills 中的死判重代码
+- **文件:** `得物对账单_sqlserver版.py`
+- **原因:** `import_bills` 中使用 `check_if_imported` 查询 `dw_dzd_bill_import_records` 表做判重，但该表从未有数据写入，每次全量重处理所有文件。此判重从未生效，是死代码。
+- **决策:**
+  1. 删除 `import_bills` 中 `check_if_imported` 调用 + `bill_no` 提取（仅用于判重）
+  2. 保留 `check_if_imported` 和 `record_import` 函数定义（不碍事，未来可能需要）
+  3. 提数步骤幂等覆盖，无副作用
+- **影响范围:** 无行为变化，少一次无用数据库查询
