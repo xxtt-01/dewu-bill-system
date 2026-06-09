@@ -69,3 +69,9 @@
   4. **`@@IDENTITY`** — 多用户环境可能取到触发器产生的 ID，改为 `SCOPE_IDENTITY()`
   5. **空 bill_no 插入** — bill_no 为空时无警告，添加 `logging.warning`
 - **影响范围:** 修复了两个潜在运行时崩溃（#1、#2）和两个安全隐患（#3、#4）
+
+## 2026-06-09 18:15: 提取目录从 dzd_tiqu 改为 dzd_xintiqu
+- **文件:** `得物对账单_sqlserver版.py`, `CONTEXT.md`
+- **原因:** 新版 _tiqu 文件包含账单总览 sheet 和 bill_no/bill_period 字段，与旧格式不兼容。需保留旧 dzd_tiqu 目录中的历史文件，新流程生成到新目录
+- **决策:** 仅改 `EXTRACT_DIR` 常量 `dzd_tiqu` → `dzd_xintiqu`，所有引用自动同步。GUI 启动时自动创建目录
+- **操作建议:** 如需补全历史数据，手动点「账单处理」→「账单入库」即可重新处理所有原下载文件到新目录
