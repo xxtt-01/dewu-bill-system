@@ -23,7 +23,7 @@ BASE_DIR = 'D:\\dw_dzd'
 LOG_DIR = os.path.join(BASE_DIR, 'dwd_bill_logs')
 RESULT_DIR = os.path.join(BASE_DIR, 'dwd_bill_results')
 DOWNLOAD_DIR = os.path.join(BASE_DIR, 'dwd_bill_downloads')
-EXTRACT_DIR = os.path.join(BASE_DIR, 'dzd_xintiqu')
+EXTRACT_DIR = os.path.join(BASE_DIR, 'dzd_tiqu')
 
 # 修改为 SQL Server 连接参数（密码优先从环境变量 DB_PASSWORD 读取）
 DB_CONFIG = {

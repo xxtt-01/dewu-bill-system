@@ -28,8 +28,8 @@
 | 阶段 | 操作 | 输入 | 输出 |
 |------|------|------|------|
 | **① 下载账单** | API 拉取账单列表 → 存入 `dw_dwd_bill_records` → 下载 Excel | 得物 API | `downloads/{shop}/{bill_no}.xlsx` |
-| **② 账单处理(提数)** | 提取 Excel 中「账单总览」「销售订单」「退货退款订单」三个 sheet | 原始 xlsx | `xintiqu/{shop}/{bill_no}_tiqu.xlsx` |
-| **③ 账单入库** | 解析 xintiqu 文件 → 写入 `dw_dzd_bill_overview` / `dw_dzd_xs` / `dw_dzd_thtk` | xintiqu xlsx | 数据库记录 |
+| **② 账单处理(提数)** | 提取 Excel 中「账单总览」「销售订单」「退货退款订单」三个 sheet | 原始 xlsx | `tiqu/{shop}/{bill_no}_tiqu.xlsx` |
+| **③ 账单入库** | 解析 tiqu 文件 → 写入 `dw_dzd_bill_overview` / `dw_dzd_xs` / `dw_dzd_thtk` | tiqu xlsx | 数据库记录 |
 
 ### 数据表字段结构
 
