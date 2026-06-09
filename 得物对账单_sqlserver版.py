@@ -705,38 +705,52 @@ def main_gui():
         auto_run.paused = False
         run_auto_sequence()
 
+    def sleep_cancellable(seconds):
+        """可中断的等待，每 1 秒检查一次暂停状态"""
+        for _ in range(seconds):
+            if auto_run.paused:
+                return False
+            time.sleep(1)
+        return True
+
     def run_auto_sequence():
-        if auto_run.paused:
-            return
+        while not auto_run.paused:
+            try:
+                logging.info("=== 开始自动运行序列 ===")
+                update_log("=== 开始自动运行序列 ===")
 
-        try:
-            # 自动运行三个按钮的逻辑
-            logging.info("=== 开始自动运行序列 ===")
-            update_log("=== 开始自动运行序列 ===")
+                # 运行 "下载账单" 按钮的逻辑
+                run_processing_with_logging(root, update_log)
+                if auto_run.paused:
+                    break
+                update_log("下载账单流程完成，等待15秒...")
+                if not sleep_cancellable(15):
+                    break
 
-            # 运行 "下载账单" 按钮的逻辑
-            run_processing_with_logging(root, update_log)
-            update_log("下载账单流程完成，等待15秒...")
-            time.sleep(15)
+                # 运行 "账单处理" 按钮的逻辑
+                import_bills_with_logging(root, update_log)
+                if auto_run.paused:
+                    break
+                update_log("账单处理流程完成，等待15秒...")
+                if not sleep_cancellable(15):
+                    break
 
-            # 运行 "账单处理" 按钮的逻辑
-            import_bills_with_logging(root, update_log)
-            update_log("账单处理流程完成，等待15秒...")
-            time.sleep(15)
+                # 运行 "账单入库" 按钮的逻辑
+                process_import_with_logging(root, update_log, text_handler)
+                if auto_run.paused:
+                    break
+                update_log("账单入库流程完成，等待21600秒后重新开始循环...")
+                if not sleep_cancellable(21600):
+                    break
 
-            # 运行 "账单入库" 按钮的逻辑
-            process_import_with_logging(root, update_log, text_handler)
-            update_log("账单入库流程完成，等待21600秒后重新开始循环...")
-            time.sleep(21600)
+            except Exception as e:
+                logging.error(f"自动运行序列异常: {str(e)}", exc_info=True)
+                update_log(f"自动运行序列异常: {str(e)}，60秒后重试...")
+                if not sleep_cancellable(60):
+                    break
 
-            # 循环重新开始
-            run_auto_sequence()
-
-        except Exception as e:
-            logging.error(f"自动运行序列异常: {str(e)}", exc_info=True)
-            update_log(f"自动运行序列异常: {str(e)}")
-        finally:
-            auto_run.running = False
+        auto_run.running = False
+        logging.info("自动运行已停止")
 
     # 启动倒计时
     threading.Thread(target=countdown_and_auto_run, daemon=True).start()
