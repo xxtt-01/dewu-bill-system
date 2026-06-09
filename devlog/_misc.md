@@ -59,3 +59,13 @@
   2. 保留 `check_if_imported` 和 `record_import` 函数定义（不碍事，未来可能需要）
   3. 提数步骤幂等覆盖，无副作用
 - **影响范围:** 无行为变化，少一次无用数据库查询
+
+## 2026-06-09 18:00: 修复代码审查发现的 5 个问题
+- **文件:** `得物对账单_sqlserver版.py`
+- **修复:**
+  1. **`total_records` 赋值前使用** — fallback_count 日志中引用了尚未定义的 `total_records`，触发降级时 NameError 崩溃。将 `total_records = len(records)` 移到日志之前
+  2. **`dw_dzd_bill_overview` ZH 列缺失** — INSERT 中包含 ZH 但表定义没有，通过 ALTER TABLE 补充
+  3. **密码日志泄露** — 连接字符串含明文密码写入日志，改为 `safe_conn_str` 脱敏
+  4. **`@@IDENTITY`** — 多用户环境可能取到触发器产生的 ID，改为 `SCOPE_IDENTITY()`
+  5. **空 bill_no 插入** — bill_no 为空时无警告，添加 `logging.warning`
+- **影响范围:** 修复了两个潜在运行时崩溃（#1、#2）和两个安全隐患（#3、#4）

@@ -112,7 +112,8 @@ class DBConnection:
             return self.conn.cursor()
         except pyodbc.Error as e:
             logging.error(f"数据库连接失败：{str(e)}")
-            logging.error(f"连接字符串：{conn_str}")
+            safe_conn_str = conn_str.replace(DB_CONFIG['password'], '****')
+            logging.error(f"连接字符串：{safe_conn_str}")
             raise
 
     def __exit__(self, exc_type, exc_val, exc_tb):
@@ -276,7 +277,7 @@ def save_records(records: List[tuple], existing_bill_nos: set) -> Tuple[List[Tup
             
             for record in new_records:
                 cursor.execute(insert_sql, record)
-                cursor.execute("SELECT @@IDENTITY")
+                cursor.execute("SELECT SCOPE_IDENTITY()")
                 new_id = cursor.fetchone()[0]
                 inserted_ids.append((new_id, record[0]))
                 bill_nos.append(record[0])
@@ -1122,12 +1123,12 @@ def import_sales_orders(cursor, data: pd.DataFrame, shop_name: str, bill_no: str
         record.append(bill_period)
         records.append(tuple(record))
 
+    total_records = len(records)
     if fallback_count > 0:
         logging.info(f"发货时间降级: {fallback_count}/{total_records} 行使用了业务时间")
 
     # 分批插入，每 500 条提交一次，避免事务过长导致连接超时
     BATCH_SIZE = 500
-    total_records = len(records)
 
     for i in range(0, total_records, BATCH_SIZE):
         batch = records[i:i+BATCH_SIZE]
@@ -1261,12 +1262,12 @@ def import_refund_orders(cursor, data: pd.DataFrame, shop_name: str, bill_no: st
         record.append(bill_period)
         records.append(tuple(record))
 
+    total_records = len(records)
     if fallback_count > 0:
         logging.info(f"发货时间降级: {fallback_count}/{total_records} 行使用了业务时间")
 
     # 分批插入，每 500 条提交一次，避免事务过长导致连接超时
     BATCH_SIZE = 500
-    total_records = len(records)
 
     for i in range(0, total_records, BATCH_SIZE):
         batch = records[i:i+BATCH_SIZE]
@@ -1340,6 +1341,8 @@ def import_bill_overview(cursor, data: pd.DataFrame, shop_name: str):
         if cursor.fetchone()[0] > 0:
             logging.info(f"账单总览 {bill_no} 已存在，跳过")
             return
+    else:
+        logging.warning("账单总览 bill_no 为空，跳过去重检查，直接插入")
 
     columns = ", ".join(field_mapping.values()) + ", ZH"
     placeholders = ", ".join(["?"] * (len(field_mapping) + 1))
