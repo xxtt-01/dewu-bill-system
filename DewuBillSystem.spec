@@ -1,12 +1,14 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+import certifi
+import os
 
 a = Analysis(
     ['得物对账单_sqlserver版.py'],
     pathex=[],
     binaries=[],
-    datas=[],
-    hiddenimports=['pyodbc', 'requests', 'tenacity', 'pandas', 'openpyxl', 'tkinter', 'tkinter.ttk', 'tkinter.messagebox', 'urllib.parse', 'datetime', 'hashlib', 'socket', 'threading', 'typing'],
+    datas=[(certifi.where(), 'certifi')],
+    hiddenimports=['pyodbc', 'requests', 'certifi', 'tenacity', 'pandas', 'openpyxl', 'tkinter', 'tkinter.ttk', 'tkinter.messagebox', 'urllib.parse', 'datetime', 'hashlib', 'socket', 'threading', 'typing'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

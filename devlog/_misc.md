@@ -90,3 +90,14 @@
 - **原因:** 旧包名 `得物对账单_sqlserver 版.exe` 含空格和冗余信息。重新打包清理旧构建，优化命名
 - **决策:** `DewuBillSystem.exe`（英文名避免路径编码问题，简洁清晰）
 - **打包参数:** `--onefile --windowed`，含全部 hidden-imports
+
+## 2026-06-18 16:59: 修复 exe 运行时报 cacert.pem 找不到导致 HTTPS 连接失败
+- **文件:**
+  - `DewuBillSystem.spec`
+  - `DewuBillSystem.exe`（重新打包）
+- **原因:** PyInstaller 打包时未包含 certifi 的 SSL 证书文件 `cacert.pem`，`datas=[]` 为空。运行时报 `OSError: Could not find a suitable TLS CA certificate bundle`，所有得物 API HTTPS 请求均失败
+- **决策:**
+  1. `.spec` 添加 `import certifi`，`datas=[(certifi.where(), 'certifi')]` 将证书文件打包进 exe
+  2. `hiddenimports` 增加 `certifi`，确保模块本身也被打包
+  3. 重新打包为 `DewuBillSystem.exe`
+- **影响范围:** 仅影响打包后的 exe 运行，源码和开发环境不受影响
