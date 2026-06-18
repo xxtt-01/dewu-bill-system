@@ -17,6 +17,10 @@ import threading
 import pandas as pd
 import openpyxl
 from openpyxl.workbook.views import BookView
+from dotenv import load_dotenv
+
+# 加载 .env 文件（敏感配置优先从环境变量读取）
+load_dotenv()
 
 # 修改基础路径配置为D盘绝对路径
 BASE_DIR = 'D:\\dw_dzd'
@@ -25,15 +29,21 @@ RESULT_DIR = os.path.join(BASE_DIR, 'dwd_bill_results')
 DOWNLOAD_DIR = os.path.join(BASE_DIR, 'dwd_bill_downloads')
 EXTRACT_DIR = os.path.join(BASE_DIR, 'dzd_tiqu')
 
-# 修改为 SQL Server 连接参数（密码优先从环境变量 DB_PASSWORD 读取）
+# 数据库连接参数（优先从环境变量 / .env 文件读取，敏感信息不留默认值）
 DB_CONFIG = {
-    'server': '123.57.247.228',
-    'database': 'YKYC',
-    'username': 'sa',
-    'password': os.environ.get('DB_PASSWORD', 'yike@2025'),
-    'port': 1433,
+    'server': os.environ.get('DB_SERVER', '123.57.247.228'),
+    'database': os.environ.get('DB_DATABASE', 'YKYC'),
+    'username': os.environ.get('DB_USERNAME', 'sa'),
+    'password': os.environ.get('DB_PASSWORD'),
+    'port': int(os.environ.get('DB_PORT', '1433')),
     'timeout': 300  # 命令超时 300 秒
 }
+
+# 密码必须通过环境变量配置，不设任何硬编码默认值
+if not DB_CONFIG['password']:
+    msg = "数据库密码未配置！请在 .env 文件中设置 DB_PASSWORD=你的密码，或设置环境变量 DB_PASSWORD"
+    print(f"错误：{msg}")
+    sys.exit(1)
 
 # API配置
 API_URL = "https://openapi.dewu.com/dop/api/v1/bill/period_list"

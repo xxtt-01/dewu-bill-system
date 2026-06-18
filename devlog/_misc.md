@@ -101,3 +101,16 @@
   2. `hiddenimports` 增加 `certifi`，确保模块本身也被打包
   3. 重新打包为 `DewuBillSystem.exe`
 - **影响范围:** 仅影响打包后的 exe 运行，源码和开发环境不受影响
+
+## 2026-06-18 17:30: 从源码中移除硬编码数据库密码，敏感配置迁移到 .env
+- **文件:**
+  - `得物对账单_sqlserver版.py`
+  - `requirements.txt`（新增 python-dotenv 依赖）
+  - `.env.example`（新建模板文件）
+- **原因:** 私有仓库中硬编码数据库默认密码 `yike@2025` 和服务器 IP 不是最佳实践，存在泄露风险
+- **决策:**
+  1. 添加 `python-dotenv`，启动时自动加载 `.env` 文件
+  2. `DB_CONFIG` 全部字段改为从环境变量读取，`DB_PASSWORD` 不设任何默认值
+  3. 密码为空时启动即报错退出，避免运行时出现 cryptic 的 pyodbc 错误
+  4. 创建 `.env.example` 模板，包含所有配置项占位
+- **影响范围:** 需在服务器上创建 `.env` 文件或设置环境变量 `DB_PASSWORD`，否则程序启动时报错退出
