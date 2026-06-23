@@ -816,23 +816,37 @@ def run_processing(root, update_log):
                         for bill_no in skipped_bill_nos:
                             skipped_records[bill_no] = "账单已存在"
 
+                            # 检查已记录的 bill_no 文件是否真实存在（处理上次下载失败的场景）
+                            filepath = os.path.join(DOWNLOAD_DIR, credential.cred_id, f"{bill_no}.xlsx")
+                            if not os.path.exists(filepath):
+                                bill_nos.append(bill_no)
+                                skipped_records[bill_no] = "账单已存在但文件缺失，重新下载"
+
+                if not bill_nos:
+                    logging.warning(f"没有需要下载的账单 [{credential.cred_id}]")
+                    update_log(f"没有需要下载的账单 [{credential.cred_id}]")
+                    return {"execution_time": execution_time, "shop_name": credential.cred_id, "status": "成功",
+                            "insert_count": len(inserted_records) if inserted_records else 0,
+                            "download_success_count": 0, "skipped_count": len(skipped_records),
+                            "inserted_records": inserted_records if inserted_records else [],
+                            "download_results": {}, "skipped_records": skipped_records}
+
                 if bill_nos:
-                    processor = BillProcessor(bill_nos, credential, progress_callback=lambda x, y: update_log(f"进度: {x}/{y}"))
-                    processor.process_all()
-                    download_results = processor.results
-                    update_log(f"[{credential.cred_id}] 等待 120 秒后开始下载...")
-                    time.sleep(120)
-                    download_files(download_results, credential.cred_id, progress_callback=lambda x, y: update_log(f"下载进度: {x}/{y}"))
-                    return {"execution_time": execution_time, "shop_name": credential.cred_id, "status": "成功",
-                            "insert_count": len(inserted_records),
-                            "download_success_count": sum(1 for v in download_results.values() if v.get("success", False)),
-                            "skipped_count": len(skipped_records),
-                            "inserted_records": inserted_records, "download_results": download_results,
-                            "skipped_records": skipped_records}
-                else:
-                    return {"execution_time": execution_time, "shop_name": credential.cred_id, "status": "成功",
-                            "insert_count": 0, "download_success_count": 0, "skipped_count": 0,
-                            "inserted_records": [], "download_results": {}, "skipped_records": {}}
+                    logging.info(f"需要下载的账单数: {len(bill_nos)} [{credential.cred_id}]")
+                    update_log(f"需下载 {len(bill_nos)} 个账单（含文件缺失重试）")
+
+                processor = BillProcessor(bill_nos, credential, progress_callback=lambda x, y: update_log(f"进度: {x}/{y}"))
+                processor.process_all()
+                download_results = processor.results
+                update_log(f"[{credential.cred_id}] 等待 120 秒后开始下载...")
+                time.sleep(120)
+                download_files(download_results, credential.cred_id, progress_callback=lambda x, y: update_log(f"下载进度: {x}/{y}"))
+                return {"execution_time": execution_time, "shop_name": credential.cred_id, "status": "成功",
+                        "insert_count": len(inserted_records),
+                        "download_success_count": sum(1 for v in download_results.values() if v.get("success", False)),
+                        "skipped_count": len(skipped_records),
+                        "inserted_records": inserted_records, "download_results": download_results,
+                        "skipped_records": skipped_records}
 
             except Exception as e:
                 logging.error(f"处理失败 [{credential.cred_id}]: {str(e)}")
@@ -841,7 +855,7 @@ def run_processing(root, update_log):
                         "insert_count": 0, "download_success_count": 0, "skipped_count": 0,
                         "inserted_records": [], "download_results": {}, "skipped_records": {}}
 
-        # 店铺间并行处理，max_workers=3 避免触发 API 限流
+        # 店铺间并行处理，max_workers=5 并行下载店铺数据
         results = []
         with ThreadPoolExecutor(max_workers=5) as executor:
             futures = {executor.submit(_process_one_shop, cred): cred for cred in credentials}

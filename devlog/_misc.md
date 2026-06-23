@@ -301,3 +301,9 @@
 - **变更:** `run_processing` 中 `for credential in credentials` 串行循环改为 `ThreadPoolExecutor(max_workers=3)` 并行，每店内部保持串行；限流 3 并发远低于 API 限制（1000次/分钟）
 - **影响范围:** 下载账单阶段从单店处理变为最多 3 店并行，整体耗时减少约 60%
 
+## 2026-06-24: 下载失败自动重试机制
+- **文件:** `得物对账单_sqlserver版.py`
+- **原因:** 网络波动可能导致下载失败，但 bill_no 已记录到 dw_dwd_bill_records，下次 AutoRun 跳过下载，导致文件永久缺失
+- **变更:** 在 `_process_one_shop` 中，对 `skipped_bill_nos`（已记录的 bill_no）逐一检查 `download/<shop>/<bill_no>.xlsx` 文件是否存在；若不存在，重新加入下载列表走 generate → export → download 流程
+- **影响范围:** 下载失败的账单会在下次 AutoRun 自动补下，无需手动干预
+
