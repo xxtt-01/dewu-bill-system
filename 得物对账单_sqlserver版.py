@@ -562,6 +562,57 @@ def process_import(root, update_log, text_handler=None):
                                         else:
                                             raise
 
+                            if '本期结算其他项费用' in xls.sheet_names:
+                                retry_count = 0
+                                max_retries = 3
+                                while retry_count < max_retries:
+                                    try:
+                                        import_other_fee_from_file(file_path, shop_name, bill_no, bill_period)
+                                        imported = True
+                                        break
+                                    except pyodbc.Error as e:
+                                        if "08S01" in str(e) and retry_count < max_retries - 1:
+                                            retry_count += 1
+                                            logging.warning(f"检测到连接断开 ({retry_count}/{max_retries})，尝试重新连接...")
+                                            update_log(f"检测到连接断开，5 秒后重试 ({retry_count}/{max_retries})...")
+                                            time.sleep(5)
+                                        else:
+                                            raise
+
+                            if '扣减其他费用明细' in xls.sheet_names:
+                                retry_count = 0
+                                max_retries = 3
+                                while retry_count < max_retries:
+                                    try:
+                                        import_deduction_detail_from_file(file_path, shop_name, bill_no, bill_period)
+                                        imported = True
+                                        break
+                                    except pyodbc.Error as e:
+                                        if "08S01" in str(e) and retry_count < max_retries - 1:
+                                            retry_count += 1
+                                            logging.warning(f"检测到连接断开 ({retry_count}/{max_retries})，尝试重新连接...")
+                                            update_log(f"检测到连接断开，5 秒后重试 ({retry_count}/{max_retries})...")
+                                            time.sleep(5)
+                                        else:
+                                            raise
+
+                            if '本期货损买进订单' in xls.sheet_names:
+                                retry_count = 0
+                                max_retries = 3
+                                while retry_count < max_retries:
+                                    try:
+                                        import_cargo_damage_from_file(file_path, shop_name, bill_no, bill_period)
+                                        imported = True
+                                        break
+                                    except pyodbc.Error as e:
+                                        if "08S01" in str(e) and retry_count < max_retries - 1:
+                                            retry_count += 1
+                                            logging.warning(f"检测到连接断开 ({retry_count}/{max_retries})，尝试重新连接...")
+                                            update_log(f"检测到连接断开，5 秒后重试 ({retry_count}/{max_retries})...")
+                                            time.sleep(5)
+                                        else:
+                                            raise
+
                             if imported:
                                 with DBConnection() as cursor:
                                     record_import_new(cursor, bill_no, shop_name)
@@ -893,7 +944,8 @@ def import_bills(root, update_log):
         logging.info("=== 本地账单导入流程启动 ===")
         update_log("本地账单导入流程启动...")
 
-        SHEETS_TO_KEEP = ['账单总览', '销售订单', '退货退款订单']
+        SHEETS_TO_KEEP = ['账单总览', '销售订单', '退货退款订单',
+                           '本期结算其他项费用', '扣减其他费用明细', '本期货损买进订单']
 
         all_files = []
         for shop_folder in os.listdir(DOWNLOAD_DIR):
@@ -943,6 +995,10 @@ def import_bills(root, update_log):
                                     data.iloc[2:]
                                 ]).reset_index(drop=True)
                                 data = data.iloc[2:]
+                            elif sheet_name in ('本期结算其他项费用', '扣减其他费用明细', '本期货损买进订单'):
+                                # 2行表头（说明行+列名行），iloc[1:]已去掉说明行
+                                # 第1行就是列名行，无需合并，直接保留
+                                pass
                             else:
                                 if len(data) >= 3:
                                     summary_row = data.iloc[:3].fillna('').astype(str).agg(''.join, axis=0)
@@ -1383,6 +1439,216 @@ def import_bill_overview_from_file(file_path: str, shop_name: str):
 
     with DBConnection() as cursor:
         import_bill_overview(cursor, data, shop_name)
+
+
+# ============================================================
+# 本期结算其他项费用 field_mapping → dw_dzd_other_fee
+# 2行表头（说明行+列名行），使用简单列名
+# ============================================================
+OTHER_FEE_FIELD_MAPPING = {
+    '费用类型': 'fee_type',
+    '订单号': 'order_id',
+    '原订单号': 'original_order_id',
+    '订单类型': 'order_type',
+    '发生时间': 'occur_time',
+    '商品金额': 'product_amount',
+    '平台预付款收回金额': 'advance_payment_recovery',
+    '操作服务费': 'operation_service_fee',
+    '认证直发服务费': 'certification_direct_fee',
+    '转账手续费': 'transfer_fee',
+    '技术服务费': 'technical_service_fee',
+    '客服托管服务费': 'customer_service_fee',
+    '卖家补贴买家(商品)': 'seller_subsidy_buyer_product',
+    '售中降价(退款)': 'price_reduction_refund',
+    '售中降价(退津贴)': 'price_reduction_subsidy',
+    '出口推广服务费': 'export_promotion_fee',
+    '卖家补贴买家(分期手续费)': 'seller_subsidy_installment_fee',
+    '其他赔付项': 'other_compensation',
+    '结算金额': 'settlement_amount',
+    '结算汇率': 'settlement_rate',
+}
+
+
+def import_other_fee(cursor, data: pd.DataFrame, shop_name: str, bill_no: str = '', bill_period: str = ''):
+    """导入本期结算其他项费用"""
+    data = data.fillna('').replace(['NaN', 'nan', 'NAN', 'None', 'none', 'NONE'], '')
+    field_mapping = OTHER_FEE_FIELD_MAPPING
+
+    columns = ", ".join(field_mapping.values()) + ", ZH, bill_no, bill_period"
+    placeholders = ", ".join(["?"] * (len(field_mapping) + 3))
+    insert_sql = f"INSERT INTO dw_dzd_other_fee ({columns}) VALUES ({placeholders})"
+
+    records = []
+    for _, row in data.iterrows():
+        record = []
+        for excel_header, db_field in field_mapping.items():
+            value = row.get(excel_header, '')
+            if pd.isna(value) or str(value).strip() in ('', 'NaN', 'nan', 'NAN', 'None', 'none', 'NONE'):
+                record.append(None)
+            else:
+                record.append(value)
+
+        record.append(shop_name)
+        record.append(bill_no)
+        record.append(bill_period)
+        records.append(tuple(record))
+
+    total_records = len(records)
+    if total_records == 0:
+        return
+
+    BATCH_SIZE = 500
+    for i in range(0, total_records, BATCH_SIZE):
+        batch = records[i:i + BATCH_SIZE]
+        cursor.executemany(insert_sql, batch)
+        cursor.connection.commit()
+
+        processed = min(i + BATCH_SIZE, total_records)
+        if processed % 1000 == 0 or processed == total_records:
+            logging.info(f"已插入 {processed}/{total_records} 条其他项费用记录")
+
+
+def import_other_fee_from_file(file_path: str, shop_name: str, bill_no: str = '', bill_period: str = ''):
+    """从 _tiqu.xlsx 的 本期结算其他项费用 sheet 读取并入库"""
+    data = pd.read_excel(file_path, sheet_name='本期结算其他项费用')
+    data = data.fillna('').replace(['NaN', 'nan', 'NAN', 'None', 'none', 'NONE'], '')
+
+    with DBConnection() as cursor:
+        import_other_fee(cursor, data, shop_name, bill_no, bill_period)
+
+
+# ============================================================
+# 扣减其他费用明细 field_mapping → dw_dzd_deduction_detail
+# ============================================================
+DEDUCTION_DETAIL_FIELD_MAPPING = {
+    '费用类型': 'fee_type',
+    '偿还总金额': 'total_repayment',
+    '明细费用项': 'detail_item',
+    '偿还金额': 'repayment_amount',
+    '币种': 'currency',
+}
+
+
+def import_deduction_detail(cursor, data: pd.DataFrame, shop_name: str, bill_no: str = '', bill_period: str = ''):
+    """导入扣减其他费用明细"""
+    data = data.fillna('').replace(['NaN', 'nan', 'NAN', 'None', 'none', 'NONE'], '')
+    field_mapping = DEDUCTION_DETAIL_FIELD_MAPPING
+
+    columns = ", ".join(field_mapping.values()) + ", ZH, bill_no, bill_period"
+    placeholders = ", ".join(["?"] * (len(field_mapping) + 3))
+    insert_sql = f"INSERT INTO dw_dzd_deduction_detail ({columns}) VALUES ({placeholders})"
+
+    records = []
+    for _, row in data.iterrows():
+        record = []
+        for excel_header, db_field in field_mapping.items():
+            value = row.get(excel_header, '')
+            if pd.isna(value) or str(value).strip() in ('', 'NaN', 'nan', 'NAN', 'None', 'none', 'NONE'):
+                record.append(None)
+            else:
+                record.append(value)
+
+        record.append(shop_name)
+        record.append(bill_no)
+        record.append(bill_period)
+        records.append(tuple(record))
+
+    total_records = len(records)
+    if total_records == 0:
+        return
+
+    BATCH_SIZE = 500
+    for i in range(0, total_records, BATCH_SIZE):
+        batch = records[i:i + BATCH_SIZE]
+        cursor.executemany(insert_sql, batch)
+        cursor.connection.commit()
+
+        processed = min(i + BATCH_SIZE, total_records)
+        if processed % 1000 == 0 or processed == total_records:
+            logging.info(f"已插入 {processed}/{total_records} 条扣减明细记录")
+
+
+def import_deduction_detail_from_file(file_path: str, shop_name: str, bill_no: str = '', bill_period: str = ''):
+    """从 _tiqu.xlsx 的 扣减其他费用明细 sheet 读取并入库"""
+    data = pd.read_excel(file_path, sheet_name='扣减其他费用明细')
+    data = data.fillna('').replace(['NaN', 'nan', 'NAN', 'None', 'none', 'NONE'], '')
+
+    with DBConnection() as cursor:
+        import_deduction_detail(cursor, data, shop_name, bill_no, bill_period)
+
+
+# ============================================================
+# 本期货损买进订单 field_mapping → dw_dzd_cargo_damage
+# ============================================================
+CARGO_DAMAGE_FIELD_MAPPING = {
+    '账单编号': 'bill_no_from_sheet',
+    '买进订单号': 'purchase_order_id',
+    '原订单号': 'original_order_id',
+    '订单类型': 'order_type',
+    '发生时间': 'occur_time',
+    '商品金额（元）': 'product_amount',
+    '平台预付款收回金额（元）': 'advance_payment_recovery',
+    '操作服务费（元）': 'operation_service_fee',
+    '认证直发服务费（元）': 'certification_direct_fee',
+    '技术服务费（元）': 'technical_service_fee',
+    '平台基础服务费（元）': 'platform_base_service_fee',
+    '其中:基础服务费金额（元）': 'base_service_fee_amount',
+    '其中:履约服务费金额（元）': 'performance_service_fee_amount',
+    '转账手续费（元）': 'transfer_fee',
+    '售后无忧服务费（元）': 'after_sales_service_fee',
+    '消费者邮费补贴（元）': 'consumer_shipping_subsidy',
+    '客服托管服务费（元）': 'customer_service_fee',
+    '包装服务费（元）': 'packaging_service_fee',
+    '结算金额（元）': 'settlement_amount',
+}
+
+
+def import_cargo_damage(cursor, data: pd.DataFrame, shop_name: str, bill_no: str = '', bill_period: str = ''):
+    """导入本期货损买进订单"""
+    data = data.fillna('').replace(['NaN', 'nan', 'NAN', 'None', 'none', 'NONE'], '')
+    field_mapping = CARGO_DAMAGE_FIELD_MAPPING
+
+    columns = ", ".join(field_mapping.values()) + ", ZH, bill_no, bill_period"
+    placeholders = ", ".join(["?"] * (len(field_mapping) + 3))
+    insert_sql = f"INSERT INTO dw_dzd_cargo_damage ({columns}) VALUES ({placeholders})"
+
+    records = []
+    for _, row in data.iterrows():
+        record = []
+        for excel_header, db_field in field_mapping.items():
+            value = row.get(excel_header, '')
+            if pd.isna(value) or str(value).strip() in ('', 'NaN', 'nan', 'NAN', 'None', 'none', 'NONE'):
+                record.append(None)
+            else:
+                record.append(value)
+
+        record.append(shop_name)
+        record.append(bill_no)
+        record.append(bill_period)
+        records.append(tuple(record))
+
+    total_records = len(records)
+    if total_records == 0:
+        return
+
+    BATCH_SIZE = 500
+    for i in range(0, total_records, BATCH_SIZE):
+        batch = records[i:i + BATCH_SIZE]
+        cursor.executemany(insert_sql, batch)
+        cursor.connection.commit()
+
+        processed = min(i + BATCH_SIZE, total_records)
+        if processed % 1000 == 0 or processed == total_records:
+            logging.info(f"已插入 {processed}/{total_records} 条货损买进记录")
+
+
+def import_cargo_damage_from_file(file_path: str, shop_name: str, bill_no: str = '', bill_period: str = ''):
+    """从 _tiqu.xlsx 的 本期货损买进订单 sheet 读取并入库"""
+    data = pd.read_excel(file_path, sheet_name='本期货损买进订单')
+    data = data.fillna('').replace(['NaN', 'nan', 'NAN', 'None', 'none', 'NONE'], '')
+
+    with DBConnection() as cursor:
+        import_cargo_damage(cursor, data, shop_name, bill_no, bill_period)
 
 
 def record_import(cursor, bill_no: str, shop_name: str):
