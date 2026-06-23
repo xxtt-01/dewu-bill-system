@@ -3,7 +3,7 @@ import logging
 import pyodbc  # 替换 pymysql 为 pyodbc
 import hashlib
 import time
-from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget,
+from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QProgressBar,
     QVBoxLayout, QHBoxLayout, QPlainTextEdit, QPushButton, QLabel, QMessageBox)
 from PyQt6.QtCore import pyqtSignal, Qt, QTimer
 from PyQt6.QtGui import QFont
@@ -213,6 +213,63 @@ def test_db_connection() -> bool:
     except pyodbc.Error as e:
         logging.error(f"数据库连接失败：{str(e)}")
         return False
+
+
+def cleanup_old_logs(days: int = 30):
+    """删除超过指定天数的日志文件"""
+    import datetime as dt
+    now = dt.datetime.now()
+    cutoff = now - dt.timedelta(days=days)
+    if not os.path.exists(LOG_DIR):
+        return
+    deleted = 0
+    for fname in os.listdir(LOG_DIR):
+        if not fname.endswith('.log'):
+            continue
+        fpath = os.path.join(LOG_DIR, fname)
+        mtime = dt.datetime.fromtimestamp(os.path.getmtime(fpath))
+        if mtime < cutoff:
+            os.remove(fpath)
+            deleted += 1
+    if deleted:
+        logging.info(f"已清理 {deleted} 个超过 {days} 天的日志文件")
+
+
+
+def check_file_changed(filepath: str, tracking_file: str) -> bool:
+    """检查文件是否有变化（基于大小+修改时间）"""
+    import json
+    if not os.path.exists(tracking_file):
+        return True
+    try:
+        with open(tracking_file, 'r', encoding='utf-8') as f:
+            tracked = json.load(f)
+    except:
+        return True
+    key = os.path.abspath(filepath)
+    stat = os.stat(filepath)
+    current = {'size': stat.st_size, 'mtime': stat.st_mtime}
+    prev = tracked.get(key)
+    return prev != current
+
+
+def update_file_tracking(filepath: str, tracking_file: str):
+    """更新文件追踪记录"""
+    import json
+    tracked = {}
+    if os.path.exists(tracking_file):
+        try:
+            with open(tracking_file, 'r', encoding='utf-8') as f:
+                tracked = json.load(f)
+        except:
+            pass
+    key = os.path.abspath(filepath)
+    stat = os.stat(filepath)
+    tracked[key] = {'size': stat.st_size, 'mtime': stat.st_mtime}
+    os.makedirs(os.path.dirname(tracking_file), exist_ok=True)
+    with open(tracking_file, 'w', encoding='utf-8') as f:
+        json.dump(tracked, f, ensure_ascii=False, indent=2)
+
 
 def fetch_app_credentials() -> List[AppCredential]:
     """从数据库获取所有应用凭证"""
@@ -821,6 +878,7 @@ def import_bills(root, update_log):
                            '本期结算其他项费用', '扣减其他费用明细', '本期货损买进订单']
 
         all_files = []
+        tracking_file = os.path.join(RESULT_DIR, 'file_tracking.json')
         for shop_folder in os.listdir(DOWNLOAD_DIR):
             shop_path = os.path.join(DOWNLOAD_DIR, shop_folder)
             if os.path.isdir(shop_path):
@@ -829,7 +887,14 @@ def import_bills(root, update_log):
                         src_path = os.path.join(shop_path, file)
                         dest_dir = os.path.join(EXTRACT_DIR, shop_folder)
                         dest_path = os.path.join(dest_dir, file.replace('.xlsx', '_tiqu.xlsx'))
-                        if not os.path.exists(dest_path) and os.path.exists(src_path):
+                        # 文件变化检测：tiqu 不存在 或 原文件已更新 → 重新处理
+                        need_process = not os.path.exists(dest_path)
+                        if not need_process and check_file_changed(src_path, tracking_file):
+                            os.remove(dest_path)
+                            logging.info(f"检测到文件更新，重新生成 tiqu: {file}")
+                            update_log(f"检测到文件更新，重新生成 tiqu: {file}")
+                            need_process = True
+                        if need_process and os.path.exists(src_path):
                             all_files.append((src_path, dest_dir, dest_path))
 
         if not all_files:
@@ -890,6 +955,14 @@ def import_bills(root, update_log):
                 logging.error(error_msg, exc_info=True)
                 update_log(f"失败: {src_path} - {str(e)}")
                 continue
+
+        # 更新文件追踪
+        for src_path, _, _ in all_files:
+            update_file_tracking(src_path, tracking_file)
+
+        # 更新文件追踪
+        for src_path, _, _ in all_files:
+            update_file_tracking(src_path, tracking_file)
 
         logging.info(f"=== 流程结束，共处理 {len(all_files)} 个文件 ===")
         update_log(f"=== 流程结束，共处理 {len(all_files)} 个文件 ===")
@@ -1609,6 +1682,8 @@ class MainWindow(QMainWindow):
         os.makedirs(DOWNLOAD_DIR, exist_ok=True)
         os.makedirs(EXTRACT_DIR, exist_ok=True)
 
+        cleanup_old_logs(30)
+
         # 颜色方案
         self.C_BG = "#303438"
         self.C_FG = "#eef5fb"
@@ -1743,6 +1818,24 @@ class MainWindow(QMainWindow):
         self.status_label.setFont(QFont("Consolas", 10))
         self.status_label.setStyleSheet(f"color: {self.C_FG_SEC}; background: transparent;")
         status_layout.addWidget(self.status_label)
+
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setMaximumWidth(150)
+        self.progress_bar.setMaximumHeight(14)
+        self.progress_bar.setTextVisible(False)
+        self.progress_bar.setStyleSheet(f"""
+            QProgressBar {{
+                background-color: {self.C_CARD};
+                border: 1px solid {self.C_BORDER};
+                border-radius: 3px;
+                height: 8px;
+            }}
+            QProgressBar::chunk {{
+                background-color: {self.C_ACCENT};
+                border-radius: 2px;
+            }}
+        """)
+        status_layout.addWidget(self.progress_bar)
 
         status_layout.addStretch(1)
 
