@@ -163,3 +163,18 @@
   3. 给 `dw_dwd_bill_records_copy1` 加详细注释：标明用途（入库判重）、使用环节（process_import 前检查）
 - **影响范围:** 无行为变化，纯清理 + 文档化
 
+## 2026-06-23 19:00: 修复 8 项潜在风险
+- **文件:** `得物对账单_sqlserver版.py`
+- **原因:** 全面代码审查发现多项 Bug 和安全隐患
+- **修复:**
+  1. **API 分页** — `fetch_api_data` 增加多页循环，`page_no` 递增至拉取全部账单（上限 100 页），防止 page_size=30 限制导致静默遗漏
+  2. **`bill_nos` 未定义** — 在 `if/else` 前初始化为 `[]`，避免 `processed_data` 为空时 `UnboundLocalError`
+  3. **`record_import_new` 失败重插** — 用 `try/except` 包裹，失败时日志记录而非崩溃；提醒人工处理
+  4. **线程安全** — `AutoRun` 改用 `@property` + `threading.Lock` 保护 `paused`/`running` 状态
+  5. **下载原子性** — 先写到 `.tmp` 再 `os.replace` 重命名，下载中断不留残文件；超时从 30s 提到 60s
+  6. **`BillProcessor` 结果格式** — 从 `f"错误: {str(e)}"` 改为 `{'success': False, 'error': str(e)}`，消除中文前缀判断
+  7. **`openpyxl` 警告过滤** — 从全忽略改为仅过滤 `openpyxl.styles.stylesheet`
+  8. **`ExcelFile` 资源释放** — 改用 `with` 上下文管理器，提取 `sheet_names` 后立即关闭
+  9. **API 密钥日志脱敏** — `app_key` 日志记录隐藏中间部分（`sk****xxxx`）
+- **影响范围:** 无行为变化，健壮性提升
+

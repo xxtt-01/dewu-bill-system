@@ -183,18 +183,49 @@ def fetch_api_data(params: dict, credential: AppCredential) -> dict:
     all_params = {**base_params, **params}
     all_params["sign"] = generate_sign(all_params, credential.app_secret)
 
-    logging.info(f"API 请求参数: {all_params}")
+    logging.info(f"API 请求参数: {safe_params}")
 
-    try:
-        response = requests.get(API_URL, params=all_params, timeout=30)
-        response.raise_for_status()
-        return response.json()
-    except requests.exceptions.RequestException as e:
-        logging.error(f"API请求失败 [{credential.cred_id}]: {str(e)}")
-        raise
-    except OSError as e:
-        logging.error(f"API网络连接错误 [{credential.cred_id}]: [{type(e).__name__}] {str(e)}", exc_info=True)
-        raise
+    # 多页获取：循环拉取所有页面的账单列表
+    all_items = []
+    page = params.get("page_no", 1)
+    page_size = params.get("page_size", 30)
+    total_count = 0
+    max_pages = 100
+
+    while True:
+        current_params = {**params}
+        current_params["page_no"] = page
+        all_params = {**base_params, **current_params}
+        all_params["sign"] = generate_sign(all_params, credential.app_secret)
+
+        try:
+            response = requests.get(API_URL, params=all_params, timeout=30)
+            response.raise_for_status()
+            result = response.json()
+        except requests.exceptions.RequestException as e:
+            logging.error(f"API请求失败 [{credential.cred_id}]: {str(e)}")
+            raise
+        except OSError as e:
+            logging.error(f"API网络连接错误 [{credential.cred_id}]: [{type(e).__name__}] {str(e)}", exc_info=True)
+            raise
+
+        data = result.get("data", {})
+        page_items = data.get("list", [])
+        all_items.extend(page_items)
+
+        if total_count == 0:
+            total_count = data.get("totalCount", data.get("total_count", data.get("total", 0)))
+
+        # 判断是否还有更多页
+        if not page_items or len(all_items) >= total_count:
+            break
+        page += 1
+        if page > max_pages:
+            logging.warning(f"分页超限(>{max_pages})，强制停止")
+            break
+
+    result["data"]["list"] = all_items
+    return result
 
 def parse_date(date_str: str) -> datetime:
     """智能日期解析"""
@@ -371,7 +402,7 @@ class BillProcessor:
             if self.progress_callback:
                 self.progress_callback(self.completed_bills, self.total_bills)
 
-def download_files(download_results: Dict[str, str], shop_name: str, progress_callback=None):
+def download_files(download_results: Dict[str, dict], shop_name: str, progress_callback=None):
     """下载文件到指定目录"""
     shop_dir = os.path.join(DOWNLOAD_DIR, shop_name)
     os.makedirs(shop_dir, exist_ok=True)
@@ -379,38 +410,41 @@ def download_files(download_results: Dict[str, str], shop_name: str, progress_ca
     total_files = len(download_results)
     completed_files = 0
 
-    for bill_no, url in download_results.items():
-        if url.startswith("错误"):
-            logging.error(f"跳过下载 [{shop_name}][{bill_no}]: {url}")
+    for bill_no, result in download_results.items():
+        if not result.get('success', False):
+            logging.warning(f"跳过失败记录 [{shop_name}][{bill_no}]: {result.get('error', '未知错误')}")
             completed_files += 1
             if progress_callback:
                 progress_callback(completed_files, total_files)
             continue
 
         try:
+            url = result['url']
             logging.info(f"开始下载 [{shop_name}][{bill_no}]")
 
-            response = requests.get(url, stream=True, timeout=30)
+            response = requests.get(url, stream=True, timeout=60)
             response.raise_for_status()
 
             filename = f"{bill_no}.xlsx"
             filepath = os.path.join(shop_dir, filename)
+            tmppath = filepath + '.tmp'
 
-            with open(filepath, 'wb') as f:
+            with open(tmppath, 'wb') as f:
                 for chunk in response.iter_content(chunk_size=8192):
                     f.write(chunk)
 
-            logging.info(f"✅ 下载完成 [{shop_name}][{bill_no}] 到 {filepath}")
+            os.replace(tmppath, filepath)
+            logging.info(f"下载完成 [{shop_name}][{bill_no}] 到 {filepath}")
             completed_files += 1
 
         except Exception as e:
-            logging.error(f"❌ 下载失败 [{shop_name}][{bill_no}]: {str(e)}")
+            logging.error(f"下载失败 [{shop_name}][{bill_no}]: {str(e)}")
             completed_files += 1
 
         if progress_callback:
             progress_callback(completed_files, total_files)
 
-    logging.info(f"🎉 所有文件下载完成！文件保存路径: {shop_dir}")
+    logging.info(f"所有文件下载完成！文件保存路径: {shop_dir}")
 
 def generate_result_file(inserted: List[Tuple[int, str]],
                          download_results: Dict[str, str],
@@ -427,7 +461,7 @@ def generate_result_file(inserted: List[Tuple[int, str]],
         f"执行时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
         f"状态: {'成功' if not error else '失败'}",
         f"数据库记录数: {len(inserted)}",
-        f"成功下载数: {sum(1 for v in download_results.values() if not v.startswith('错误'))}",
+        f"成功下载数: {sum(1 for v in download_results.values() if v.get('success', False))}",
         f"跳过的账单数: {len(skipped)}",
         "\n数据库记录详情:"
     ]
@@ -438,10 +472,10 @@ def generate_result_file(inserted: List[Tuple[int, str]],
         content.append("无新增数据库记录")
 
     content.append("\n下载结果详情:")
-    for bno, url in download_results.items():
+    for bno, result in download_results.items():
         content.append(f"Bill No: {bno}")
-        content.append(f"状态: {'成功' if not url.startswith('错误') else '失败'}")
-        content.append(f"链接: {url}")
+        content.append(f"状态: {'成功' if result.get('success', False) else result.get('error', '未知')}")
+        content.append(f"链接: {result.get('url', '')}")
         content.append("-" * 50)
 
     content.append("\n跳过的账单详情:")
@@ -480,7 +514,7 @@ def process_import(root, update_log, text_handler=None):
         update_log("账单入库流程启动...")
 
         import warnings
-        warnings.filterwarnings('ignore', category=UserWarning, module=r'openpyxl.*')
+        warnings.filterwarnings('ignore', category=UserWarning, module=r'openpyxl\.styles\.stylesheet')
 
         for shop_folder in os.listdir(EXTRACT_DIR):
             shop_path = os.path.join(EXTRACT_DIR, shop_folder)
@@ -502,13 +536,14 @@ def process_import(root, update_log, text_handler=None):
                                     update_log(f"账单 {bill_no} 已导入新表，跳过")
                                     continue
 
-                            xls = pd.ExcelFile(file_path)
                             imported = False
+                            with pd.ExcelFile(file_path) as xls:
+                                sheet_names = set(xls.sheet_names)
 
                             # 从账单总览 sheet 提取 bill_period
                             bill_period = extract_bill_period_from_file(file_path)
 
-                            if '销售订单' in xls.sheet_names:
+                            if '销售订单' in sheet_names:
                                 # 带重试的销售订单导入
                                 retry_count = 0
                                 max_retries = 3
@@ -526,7 +561,7 @@ def process_import(root, update_log, text_handler=None):
                                         else:
                                             raise
 
-                            if '退货退款订单' in xls.sheet_names:
+                            if '退货退款订单' in sheet_names:
                                 # 带重试的退货订单导入
                                 retry_count = 0
                                 max_retries = 3
@@ -544,7 +579,7 @@ def process_import(root, update_log, text_handler=None):
                                         else:
                                             raise
 
-                            if '账单总览' in xls.sheet_names:
+                            if '账单总览' in sheet_names:
                                 # 带重试的账单总览导入
                                 retry_count = 0
                                 max_retries = 3
@@ -562,7 +597,7 @@ def process_import(root, update_log, text_handler=None):
                                         else:
                                             raise
 
-                            if '本期结算其他项费用' in xls.sheet_names:
+                            if '本期结算其他项费用' in sheet_names:
                                 retry_count = 0
                                 max_retries = 3
                                 while retry_count < max_retries:
@@ -579,7 +614,7 @@ def process_import(root, update_log, text_handler=None):
                                         else:
                                             raise
 
-                            if '扣减其他费用明细' in xls.sheet_names:
+                            if '扣减其他费用明细' in sheet_names:
                                 retry_count = 0
                                 max_retries = 3
                                 while retry_count < max_retries:
@@ -596,7 +631,7 @@ def process_import(root, update_log, text_handler=None):
                                         else:
                                             raise
 
-                            if '本期货损买进订单' in xls.sheet_names:
+                            if '本期货损买进订单' in sheet_names:
                                 retry_count = 0
                                 max_retries = 3
                                 while retry_count < max_retries:
@@ -614,10 +649,14 @@ def process_import(root, update_log, text_handler=None):
                                             raise
 
                             if imported:
-                                with DBConnection() as cursor:
-                                    record_import_new(cursor, bill_no, shop_name)
-                                    logging.info(f"记录账单 {bill_no} 到新表")
-                                    update_log(f"记录账单 {bill_no} 到新表")
+                                try:
+                                    with DBConnection() as cursor:
+                                        record_import_new(cursor, bill_no, shop_name)
+                                        logging.info(f"记录账单 {bill_no} 到新表")
+                                        update_log(f"记录账单 {bill_no} 到新表")
+                                except Exception as e:
+                                    logging.error(f"记录导入状态失败 {bill_no}: {e}")
+                                    update_log(f"⚠ 数据已入库但状态记录失败: {bill_no}，如补数请先清理 dw_dwd_bill_records_copy1")
 
                             logging.info(f"文件处理完成: {file_path}")
                             update_log(f"文件处理完成: {file_path}")
@@ -743,8 +782,31 @@ def main_gui():
     # 自动运行控制
     class AutoRun:
         def __init__(self):
+            import threading
+            self._lock = threading.Lock()
             self.paused = False
             self.running = False
+
+        @property
+        def paused(self):
+            with self._lock:
+                return self._paused
+
+        @paused.setter
+        def paused(self, value):
+            with self._lock:
+                self._paused = value
+
+        @property
+        def running(self):
+            with self._lock:
+                return self._running
+
+        @running.setter
+        def running(self, value):
+            with self._lock:
+                self._running = value
+
     auto_run = AutoRun()
 
     def countdown_and_auto_run():
@@ -860,6 +922,7 @@ def run_processing(root, update_log):
                     raise ValueError(f"API错误: {api_response.get('message')}")
 
                 processed_data = process_api_data(api_response.get("data", {}), credential.cred_id)
+                bill_nos = []
                 if not processed_data:
                     logging.warning(f"没有可处理的有效数据 [{credential.cred_id}]")
                     update_log(f"没有可处理的有效数据 [{credential.cred_id}]")
@@ -896,7 +959,7 @@ def run_processing(root, update_log):
                         "shop_name": credential.cred_id,
                         "status": "成功",
                         "insert_count": len(inserted_records),
-                        "download_success_count": sum(1 for v in download_results.values() if not v.startswith("错误")),
+                        "download_success_count": sum(1 for v in download_results.values() if v.get("success", False)),
                         "skipped_count": len(skipped_records),
                         "inserted_records": inserted_records,
                         "download_results": download_results,
