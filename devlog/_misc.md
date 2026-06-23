@@ -256,3 +256,14 @@
   2. **DB 迁移** — `dw_dzd_xs` +4 列（business_time, transaction_success_time, settlement_rule_type, remark_content），`dw_dzd_thtk` +1 列（remark_content）
 - **影响范围:** 需要重新运行「账单处理」→「账单入库」让已下载的文件补上这些字段；DB 表已备份且清空，迁移无风险
 
+## 2026-06-23 22:00: 追加物流签收时间等 3 个字段 + 修复映射回退
+- **文件:**
+  - `得物对账单_sqlserver版.py`
+  - `数据库迁移_20260625_新增字段_第二批.sql`（新建）
+- **原因:** 干运行发现退货完成时间映射被错误修改（完成→创建），以及全部店铺文件还有 3 个未映射列被静默丢弃
+- **变更:**
+  1. **映射修复** — 还原 `退货创建时间` → `退货完成时间`（原始映射正确，改反了）
+  2. **新增映射** — 销售订单增加 3 个键值对（物流签收时间、包含吊牌卡套费、政府补贴商家出资金额），退货退款订单增加 2 个
+  3. **DB 迁移** — `dw_dzd_xs` 追加 3 列（logistics_sign_time, includes_tag_card_fee, government_subsidy_amount），`dw_dzd_thtk` 追加 2 列
+- **影响范围:** 所有 column mapping 已与最新 Excel 格式对齐
+

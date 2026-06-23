@@ -1115,6 +1115,11 @@ def import_sales_orders(cursor, data: pd.DataFrame, shop_name: str, bill_no: str
         "订单基础信息交易成功时间交易成功时间": "transaction_success_time",
         "结算信息结算规则类型结算规则类型": "settlement_rule_type",
         "备注信息备注内容备注内容": "remark_content",
+
+        # 新增字段（2026-06 得物二次升级）
+        "订单基础信息物流签收时间物流签收时间": "logistics_sign_time",
+        "平台服务费信息操作服务费信息包含吊牌卡套费": "includes_tag_card_fee",
+        "结算信息卖家补贴金额政府补贴商家出资金额": "government_subsidy_amount",
     }
 
     columns = ", ".join(field_mapping.values()) + ", ZH, bill_no, bill_period"
@@ -1177,7 +1182,7 @@ def import_refund_orders(cursor, data: pd.DataFrame, shop_name: str, bill_no: st
     field_mapping = {
         "订单基础信息订单号订单号": "order_id",
         "订单基础信息退货订单号退货订单号": "return_order_id",
-        "订单基础信息退货创建时间退货创建时间": "return_create_time",
+        "订单基础信息退货完成时间退货完成时间": "return_create_time",
         "订单基础信息退货订单账单起止时间退货订单账单起止时间": "return_order_bill_period",
         "订单基础信息订单类型订单类型": "order_type",
         "订单基础信息商品名称商品名称": "product_name",
@@ -1257,6 +1262,10 @@ def import_refund_orders(cursor, data: pd.DataFrame, shop_name: str, bill_no: st
 
         # 新增字段（2026-06 得物格式升级）
         "备注信息备注内容备注内容": "remark_content",
+
+        # 新增字段（2026-06 得物二次升级）
+        "平台服务费信息操作服务费信息包含吊牌卡套费": "includes_tag_card_fee",
+        "结算信息卖家补贴金额政府补贴商家出资金额": "government_subsidy_amount",
     }
 
     columns = ", ".join(field_mapping.values()) + ", ZH, bill_no, bill_period"
