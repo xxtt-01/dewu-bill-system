@@ -372,12 +372,13 @@ def parse_date(date_str: str) -> datetime:
     raise ValueError(f"无法解析的日期格式: {date_str}")
 
 def get_default_dates() -> dict:
-    """获取默认日期（近30天）"""
+    """获取默认日期（整体往前推7天）"""
     today = datetime.now()
-    start_date = today - timedelta(days=30)
+    end_date = today - timedelta(days=7)
+    start_date = end_date - timedelta(days=30)
     return {
         "bill_start_date": start_date.strftime("%Y-%m-%d"),
-        "bill_end_date": today.strftime("%Y-%m-%d"),
+        "bill_end_date": end_date.strftime("%Y-%m-%d"),
         "bill_no": None,
         "page_no": 1,
         "page_size": 30
@@ -658,16 +659,16 @@ def process_import(root, update_log, text_handler=None):
                             bill_no = filename.split('_')[0]
                             shop_name = shop_folder
 
-                            with DBConnection() as cursor:
-                                if check_if_imported_new(cursor, bill_no):
-                                    logging.info(f"账单 {bill_no} 已导入新表，跳过")
-                                    update_log(f"账单 {bill_no} 已导入新表，跳过")
-                                    continue
-
                             imported = False
                                                         # 一次性读取所有 sheet，避免每个 sheet 单独读文件
                             xls_cache = pd.read_excel(file_path, sheet_name=None, header=None)
                             sheet_names = set(xls_cache.keys())
+
+                            # 将 header=None 的 DataFrame 提升列名：row 0 → 列名，删除 row 0
+                            def _prepare(df):
+                                df = df.copy()
+                                df.columns = df.iloc[0]
+                                return df.iloc[1:].reset_index(drop=True)
 
                             # 从账单总览 sheet 提取 bill_period
                             bill_period = extract_bill_period_from_file(file_path)
@@ -693,24 +694,31 @@ def process_import(root, update_log, text_handler=None):
                                         else:
                                             raise
 
-                            _retry_import(import_sales_orders, '销售订单', cursor, xls_cache['销售订单'], shop_name, bill_no, bill_period)
-                            _retry_import(import_refund_orders, '退货退款订单', cursor, xls_cache['退货退款订单'], shop_name, bill_no, bill_period)
+                            with DBConnection() as cursor:
+                                if check_if_imported_new(cursor, bill_no):
+                                    logging.info(f"账单 {bill_no} 已导入新表，跳过")
+                                    update_log(f"账单 {bill_no} 已导入新表，跳过")
+                                    continue
 
-                            if '账单总览' in sheet_names:
-                                _retry_import(import_bill_overview, '账单总览', cursor, xls_cache['账单总览'], shop_name)
+                                # 5 个多行数据 sheet：提升列名后导入
+                                _retry_import(import_sales_orders, '销售订单', cursor, _prepare(xls_cache['销售订单']), shop_name, bill_no, bill_period)
+                                _retry_import(import_refund_orders, '退货退款订单', cursor, _prepare(xls_cache['退货退款订单']), shop_name, bill_no, bill_period)
+                                _retry_import(import_other_fee, '本期结算其他项费用', cursor, _prepare(xls_cache['本期结算其他项费用']), shop_name, bill_no, bill_period)
+                                _retry_import(import_deduction_detail, '扣减其他费用明细', cursor, _prepare(xls_cache['扣减其他费用明细']), shop_name, bill_no, bill_period)
+                                _retry_import(import_cargo_damage, '本期货损买进订单', cursor, _prepare(xls_cache['本期货损买进订单']), shop_name, bill_no, bill_period)
 
-                            _retry_import(import_other_fee, '本期结算其他项费用', cursor, xls_cache['本期结算其他项费用'], shop_name, bill_no, bill_period)
-                            _retry_import(import_deduction_detail, '扣减其他费用明细', cursor, xls_cache['扣减其他费用明细'], shop_name, bill_no, bill_period)
-                            _retry_import(import_cargo_damage, '本期货损买进订单', cursor, xls_cache['本期货损买进订单'], shop_name, bill_no, bill_period)
-                            if imported:
-                                try:
-                                    with DBConnection() as cursor:
+                                # 账单总览：保持 raw 格式，函数内部自己做列名提升
+                                if '账单总览' in sheet_names:
+                                    _retry_import(import_bill_overview, '账单总览', cursor, xls_cache['账单总览'], shop_name)
+
+                                if imported:
+                                    try:
                                         record_import_new(cursor, bill_no, shop_name)
                                         logging.info(f"记录账单 {bill_no} 到新表")
                                         update_log(f"记录账单 {bill_no} 到新表")
-                                except Exception as e:
-                                    logging.error(f"记录导入状态失败 {bill_no}: {e}")
-                                    update_log(f"⚠ 数据已入库但状态记录失败: {bill_no}，如补数请先清理 dw_dwd_bill_records_copy1")
+                                    except Exception as e:
+                                        logging.error(f"记录导入状态失败 {bill_no}: {e}")
+                                        update_log(f"⚠ 数据已入库但状态记录失败: {bill_no}，如补数请先清理 dw_dwd_bill_records_copy1")
 
                             logging.info(f"文件处理完成: {file_path}")
                             update_log(f"文件处理完成: {file_path}")
@@ -835,7 +843,7 @@ def run_processing(root, update_log):
 
         # 店铺间并行处理，max_workers=3 避免触发 API 限流
         results = []
-        with ThreadPoolExecutor(max_workers=3) as executor:
+        with ThreadPoolExecutor(max_workers=5) as executor:
             futures = {executor.submit(_process_one_shop, cred): cred for cred in credentials}
             for f in as_completed(futures):
                 results.append(f.result())
@@ -938,10 +946,6 @@ def import_bills(root, update_log):
                 logging.error(error_msg, exc_info=True)
                 update_log(f"失败: {src_path} - {str(e)}")
                 continue
-
-        # 更新文件追踪
-        for src_path, _, _ in all_files:
-            update_file_tracking(src_path, tracking_file)
 
         # 更新文件追踪
         for src_path, _, _ in all_files:

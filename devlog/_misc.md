@@ -157,6 +157,16 @@
   - `得物对账单_sqlserver版.py`
   - `数据库迁移_20260625_补充表注释.sql`（新建）
 - **原因:** 死表 `dw_dzd_bill_import_records` 已由用户在数据库中删除，代码中对应的 `check_if_imported` 和 `record_import` 函数零调用；`dw_dwd_bill_records` 和 `dw_dwd_bill_records_copy1` 缺少充分的表注释
+
+## 2026-06-24: 修复入库流程 2 个严重 Bug
+- **文件:** `得物对账单_sqlserver版.py`
+- **原因:** 全流程审查发现 process_import 使用已关闭的数据库连接 + header=None 导致列名丢失
+- **Bug 1:** `with DBConnection() as cursor:` 作用域只包了 `check_if_imported_new`，后续 `_retry_import` 调用使用的 cursor 已关闭连接 → 所有入库静默失败
+  - **修复:** `with DBConnection()` 下移至包裹所有 `_retry_import` 调用和 `record_import_new`
+- **Bug 2:** `pd.read_excel(..., header=None)` 生成整数索引列，但 import 函数用字符串列名取值 → 所有记录为空
+  - **修复:** 新增 `_prepare(df)` 函数将 row 0 提升为 DataFrame.columns 并删除 row 0；5 个数据 sheet 传入前先经过 `_prepare()`
+- **小问题:** `import_bills` 中 `update_file_tracking` 对同一批文件调了两次 → 删除重复
+- **影响范围:** 此前运行"账单入库"实际未写入数据，修后恢复正常
 - **决策:**
   1. 删除 `check_if_imported` 和 `record_import` 两个死函数
   2. 给 `dw_dwd_bill_records` 加详细注释：标明数据来源（period_list API）、消费者（download_files）、去重逻辑
