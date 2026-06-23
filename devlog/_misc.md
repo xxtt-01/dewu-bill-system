@@ -178,3 +178,15 @@
   9. **API 密钥日志脱敏** — `app_key` 日志记录隐藏中间部分（`sk****xxxx`）
 - **影响范围:** 无行为变化，健壮性提升
 
+## 2026-06-23 19:30: 补修 process_all 结果格式 + 清理死代码 + 更新文档
+- **文件:**
+  - `得物对账单_sqlserver版.py`
+  - `CONTEXT.md`
+- **原因:** 上一轮修复中 `process_all` 方法仍返回旧格式字符串，而 `download_files` 已改为接收 dict，运行时将 `AttributeError`；`save_records` 存在死代码；`CONTEXT.md` 未同步更新
+- **修复:**
+  1. **`process_all` 结果格式** — `self.results[bill_no] = download_url` → `{'success': True, 'url': download_url}`；错误分支同步修改
+  2. **`BillProcessor.__init__` 类型标注** — `Dict[str, str]` → `Dict[str, dict]`
+  3. **`save_records` 清理** — 删除外层重复的 `inserted_ids`/`bill_nos`/`new_records` 初始化；删除误导性注释"SQL Server不支持executemany"
+  4. **`CONTEXT.md` 同步** — 更新数据表清单（9 张表）、数据流阶段（6 个 sheet）、表头处理说明（3 种分支）
+- **影响范围:** 无行为变化，文档与代码一致
+

@@ -17,19 +17,21 @@
 | 表名 | 用途 |
 |------|------|
 | `dewu_app_credentials` | 得物开放平台 API 凭证（店铺标识 + Key + Secret） |
-| `dw_dwd_bill_records` | 账单主记录表：存储每个账单的概要信息（金额、状态、时间范围） |
-| `dw_dwd_bill_records_copy1` | 新导入记录跟踪表：记录已入库的 bill_no（用于判重） |
-| `dw_dzd_bill_import_records` | 旧导入记录跟踪表（遗留，当前流程未调用） |
+| `dw_dwd_bill_records` | 【API账单列表】存储 period_list 接口获取的账单记录，按 bill_no+店铺去重 |
+| `dw_dwd_bill_records_copy1` | 【已入库判重】存储已成功导入的 bill_no，process_import 前按此表跳过 |
 | `dw_dzd_xs` | 销售订单明细表：存储所有「销售订单」sheet 的行级数据 |
 | `dw_dzd_thtk` | 退货退款订单明细表：存储所有「退货退款订单」sheet 的行级数据 |
-| `dw_dzd_bill_overview` | 账单总览表：每账单一行，存储「账单总览」sheet 的汇总数据（23 个金额/状态字段，含 sp_addextendedproperty 中文注释） |
+| `dw_dzd_bill_overview` | 账单总览表：每账单一行，存储「账单总览」sheet 的汇总数据（23 个字段） |
+| `dw_dzd_other_fee` | 本期结算其他项费用明细表（20 个金额/类型字段 + bill_no/bill_period） |
+| `dw_dzd_deduction_detail` | 扣减其他费用明细表（费用类型、金额、币种） |
+| `dw_dzd_cargo_damage` | 本期货损买进订单明细表（19 个订单/金额字段） |
 
 ### 数据流阶段
 | 阶段 | 操作 | 输入 | 输出 |
 |------|------|------|------|
 | **① 下载账单** | API 拉取账单列表 → 存入 `dw_dwd_bill_records` → 下载 Excel | 得物 API | `downloads/{shop}/{bill_no}.xlsx` |
-| **② 账单处理(提数)** | 提取 Excel 中「账单总览」「销售订单」「退货退款订单」三个 sheet | 原始 xlsx | `tiqu/{shop}/{bill_no}_tiqu.xlsx` |
-| **③ 账单入库** | 解析 tiqu 文件 → 写入 `dw_dzd_bill_overview` / `dw_dzd_xs` / `dw_dzd_thtk` | tiqu xlsx | 数据库记录 |
+| **② 账单处理(提数)** | 提取 Excel 中全部 6 个 sheet（账单总览/销售订单/退货退款订单/本期结算其他项费用/扣减其他费用明细/本期货损买进订单） | 原始 xlsx | `tiqu/{shop}/{bill_no}_tiqu.xlsx` |
+| **③ 账单入库** | 解析 tiqu 文件 → 写入 6 张明细表 | tiqu xlsx | 数据库记录 |
 
 ### 数据表字段结构
 
@@ -56,7 +58,11 @@
 同拼接结构，含 `bill_no`、`bill_period` 两个新增字段。
 
 ### 需要关注的点
-- `import_bills`（阶段②）中的 `data.iloc[3:]` 用于跳过得物文件的多行表头：第 1 行说明 → `iloc[1:]` 去除；第 2-4 行（分组+列名+子列名）→ 合并为扁平表头；`iloc[3:]` 保留合并后的表头+数据
+- `import_bills`（阶段②）按 sheet 类型分 3 种表头处理：
+  - **销售订单/退货退款订单**：`data.iloc[1:]` 去说明行 → `data.iloc[:3]` 合并 3 行（分组+列名+子列名）为扁平表头 → `data.iloc[3:]` 取数据
+  - **账单总览**：`data.iloc[1:]` → 合并前 2 行为扁平表头 → `data.iloc[2:]` 取数据
+  - **本期结算其他项费用/扣减其他费用明细/本期货损买进订单**：`data.iloc[1:]` 去说明行后第 1 行即列名，无需合并，直接写入
 - `process_import`（阶段③）先检查 `dw_dwd_bill_records_copy1` 判重，已入库则跳过
 - SQL Server 连接使用 `pyodbc` + `{SQL Server}` 驱动，密码通过环境变量 `DB_PASSWORD` 配置
 - 批量插入每 500 条提交一次，避免长事务超时
+- 已废弃的 `dw_dzd_bill_import_records` 表及其对应的 `check_if_imported`、`record_import` 函数已在 2026-06-23 清理

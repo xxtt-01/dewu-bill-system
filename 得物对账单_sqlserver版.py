@@ -297,21 +297,16 @@ def save_records(records: List[tuple], existing_bill_nos: set) -> Tuple[List[Tup
         seller_subsidies_amount, refund_amount, status, update_time, name
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """
-    # 移除ON DUPLICATE KEY UPDATE部分（SQL Server不支持）
-
-    inserted_ids = []
-    bill_nos = []
-    new_records = [record for record in records if record[0] not in existing_bill_nos]
 
     try:
         with DBConnection() as cursor:
-            # 修改查询语句
+            # 先检查当前最大ID（用于判断后续是否有新增）
             cursor.execute(
                 "SELECT ISNULL(MAX(id), 0) FROM dw_dwd_bill_records"
             )
             max_id_before = cursor.fetchone()[0]
 
-            # 批量插入需要逐条处理（SQL Server不支持executemany的INSERT）
+            # 逐条 INSERT 以便通过 SCOPE_IDENTITY() 获取自增 ID
             inserted_ids = []
             bill_nos = []
             new_records = [record for record in records if record[0] not in existing_bill_nos]
@@ -335,7 +330,7 @@ class BillProcessor:
     def __init__(self, bill_nos: List[str], credential: AppCredential, progress_callback=None):
         self.bill_nos = bill_nos
         self.credential = credential
-        self.results: Dict[str, str] = {}
+        self.results: Dict[str, dict] = {}
         self.progress_callback = progress_callback
         self.total_bills = len(bill_nos)
         self.completed_bills = 0
@@ -391,11 +386,11 @@ class BillProcessor:
             try:
                 file_key = self._generate_bill(bill_no)
                 download_url = self._get_download_url(file_key)
-                self.results[bill_no] = download_url
+                self.results[bill_no] = {'success': True, 'url': download_url}
                 logging.info(f"成功获取下载链接 [{self.credential.cred_id}]: {download_url}")
 
             except Exception as e:
-                self.results[bill_no] = f"错误: {str(e)}"
+                self.results[bill_no] = {'success': False, 'error': str(e)}
                 logging.error(f"处理账单失败 [{self.credential.cred_id}]: {str(e)}")
 
             self.completed_bills += 1
