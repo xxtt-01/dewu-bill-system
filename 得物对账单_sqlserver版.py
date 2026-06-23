@@ -1171,7 +1171,7 @@ def import_refund_orders(cursor, data: pd.DataFrame, shop_name: str, bill_no: st
     field_mapping = {
         "订单基础信息订单号订单号": "order_id",
         "订单基础信息退货订单号退货订单号": "return_order_id",
-        "订单基础信息退货完成时间退货完成时间": "return_create_time",
+        "订单基础信息退货创建时间退货创建时间": "return_create_time",
         "订单基础信息退货订单账单起止时间退货订单账单起止时间": "return_order_bill_period",
         "订单基础信息订单类型订单类型": "order_type",
         "订单基础信息商品名称商品名称": "product_name",
