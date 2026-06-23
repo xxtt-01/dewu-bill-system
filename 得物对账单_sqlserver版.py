@@ -1038,13 +1038,6 @@ def import_bills(root, update_log):
         update_log(f"未预期错误: {str(e)}")
 
 
-def check_if_imported(cursor, bill_no: str) -> bool:
-    """检查账单是否已经导入"""
-    # 修改占位符从%s为?
-    query = "SELECT COUNT(*) FROM dw_dzd_bill_import_records WHERE bill_no = ?"
-    cursor.execute(query, (bill_no,))
-    count = cursor.fetchone()[0]
-    return count > 0
 
 def check_if_imported_new(cursor, bill_no: str) -> bool:
     """检查账单是否已经导入到新表"""
@@ -1651,15 +1644,6 @@ def import_cargo_damage_from_file(file_path: str, shop_name: str, bill_no: str =
         import_cargo_damage(cursor, data, shop_name, bill_no, bill_period)
 
 
-def record_import(cursor, bill_no: str, shop_name: str):
-    """记录账单导入信息"""
-    insert_sql = """
-    INSERT INTO dw_dzd_bill_import_records (
-        bill_no, shop_name, import_time
-    ) VALUES (?, ?, ?)
-    """
-    import_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    cursor.execute(insert_sql, (bill_no, shop_name, import_time))
 
 def record_import_new(cursor, bill_no: str, shop_name: str):
     """记录账单到新表"""

@@ -152,3 +152,14 @@
   4. **入库逻辑**：新增 6 个函数（3 个 wrapper + 3 个 field_mapping），延用每 500 条 batch insert + 事务提交模式
 - **影响范围:** 已有 tiqu 文件不含新 3 个 sheet，需重新运行「账单处理」生成新 tiqu；历史数据不受影响（新表从头开始累积）
 
+## 2026-06-23 18:30: 清理死表 + 补充表注释
+- **文件:**
+  - `得物对账单_sqlserver版.py`
+  - `数据库迁移_20260625_补充表注释.sql`（新建）
+- **原因:** 死表 `dw_dzd_bill_import_records` 已由用户在数据库中删除，代码中对应的 `check_if_imported` 和 `record_import` 函数零调用；`dw_dwd_bill_records` 和 `dw_dwd_bill_records_copy1` 缺少充分的表注释
+- **决策:**
+  1. 删除 `check_if_imported` 和 `record_import` 两个死函数
+  2. 给 `dw_dwd_bill_records` 加详细注释：标明数据来源（period_list API）、消费者（download_files）、去重逻辑
+  3. 给 `dw_dwd_bill_records_copy1` 加详细注释：标明用途（入库判重）、使用环节（process_import 前检查）
+- **影响范围:** 无行为变化，纯清理 + 文档化
+
