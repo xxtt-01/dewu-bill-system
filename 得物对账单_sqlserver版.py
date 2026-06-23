@@ -697,90 +697,130 @@ def process_import_with_logging(root, update_log, text_handler=None):
         update_log("账单入库流程结束")
 
 def main_gui():
-    """创建初始GUI界面"""
+    """创建初始GUI界面 - 深色玻璃拟态风格"""
+    import tkinter.font as tkfont
+
     root = tk.Tk()
-    root.title("账单处理控制系统")
-    
-    # 确保D盘目录存在（使用绝对路径）
+    root.title("得物对账单控制系统")
+    root.configure(bg='#303438')
+    root.minsize(800, 500)
+
     os.makedirs(LOG_DIR, exist_ok=True)
     os.makedirs(RESULT_DIR, exist_ok=True)
     os.makedirs(DOWNLOAD_DIR, exist_ok=True)
     os.makedirs(EXTRACT_DIR, exist_ok=True)
 
-    frame = ttk.Frame(root, padding="20")
-    frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+    C_BG = '#303438'
+    C_FG = '#eef5fb'
+    C_FG_SEC = '#a3adbb'
+    C_ACCENT = '#b7ead4'
+    C_CARD = '#1c1c24'
+    C_BORDER = '#42474d'
+    C_SUCCESS = '#4ec77f'
+    C_DANGER = '#f06a7b'
 
-    log_text = tk.Text(frame, wrap=tk.WORD, height=20, width=80)
-    log_text.grid(row=0, column=0, columnspan=2, padx=10, pady=10)
+    mono = tkfont.Font(family="Consolas", size=11)
+    mono_small = tkfont.Font(family="Consolas", size=10)
+    mono_big = tkfont.Font(family="Consolas", size=28)
+
+    style = ttk.Style()
+    style.theme_use('clam')
+    style.configure('.', background=C_BG, foreground=C_FG, font=mono_small)
+    style.configure('TFrame', background=C_BG)
+    style.configure('Action.TButton',
+        background=C_CARD, foreground=C_FG, font=mono_small,
+        borderwidth=1, focusthickness=0, padding=(14, 6))
+    style.map('Action.TButton',
+        background=[('active', C_ACCENT)], foreground=[('active', '#1c1c24')])
+    style.configure('Pause.TButton',
+        background=C_CARD, foreground=C_DANGER, font=mono_small,
+        borderwidth=1, focusthickness=0, padding=(14, 6))
+    style.map('Pause.TButton',
+        background=[('active', C_DANGER)], foreground=[('active', '#1c1c24')])
+
+    root.columnconfigure(0, weight=1)
+    root.rowconfigure(0, weight=1)
+
+    frame = tk.Frame(root, bg=C_BG)
+    frame.grid(row=0, column=0, sticky='nsew', padx=14, pady=14)
+    frame.columnconfigure(0, weight=1)
+    frame.rowconfigure(0, weight=1)
+
+    log_card = tk.Frame(frame, bg=C_CARD, highlightbackground=C_BORDER, highlightthickness=1)
+    log_card.grid(row=0, column=0, columnspan=5, sticky='nsew', pady=(0, 8))
+    log_card.columnconfigure(0, weight=1)
+    log_card.rowconfigure(0, weight=1)
+
+    log_text = tk.Text(log_card, wrap=tk.WORD,
+                       bg=C_CARD, fg=C_FG, font=mono,
+                       insertbackground=C_ACCENT,
+                       relief='flat', borderwidth=0,
+                       padx=12, pady=10, highlightthickness=0)
+    log_text.grid(row=0, column=0, sticky='nsew')
+
+    scrollbar = ttk.Scrollbar(log_card, orient='vertical', command=log_text.yview)
+    scrollbar.grid(row=0, column=1, sticky='ns')
+    log_text.configure(yscrollcommand=scrollbar.set)
     log_text.config(state=tk.DISABLED)
 
     text_handler = TextHandler(log_text)
     log_file = setup_logging(text_handler)
 
     def update_log(message):
-        """更新日志到 Text 控件"""
         log_text.config(state=tk.NORMAL)
         log_text.insert(tk.END, message + "\n")
         log_text.yview(tk.END)
         log_text.config(state=tk.DISABLED)
 
     def run_in_thread(func):
-        """在单独线程中运行耗时任务"""
-
         def wrapper():
             try:
                 func()
             except Exception as e:
                 logging.error(f"线程任务异常: {str(e)}", exc_info=True)
-
         thread = threading.Thread(target=wrapper)
         thread.daemon = True
         thread.start()
 
-    start_button = ttk.Button(
-        frame,
-        text="下载账单",
-        command=lambda: run_in_thread(lambda: run_processing_with_logging(root, update_log))
-    )
-    start_button.grid(row=1, column=0, padx=10, pady=10)
+    buttons = [
+        ("下载账单", 'Action.TButton',
+         lambda: run_in_thread(lambda: run_processing_with_logging(root, update_log))),
+        ("账单处理", 'Action.TButton',
+         lambda: run_in_thread(lambda: import_bills_with_logging(root, update_log))),
+        ("账单入库", 'Action.TButton',
+         lambda: run_in_thread(lambda: process_import_with_logging(root, update_log, text_handler))),
+        ("测试连接", 'Action.TButton',
+         lambda: run_in_thread(lambda: test_db_connection_gui(update_log))),
+    ]
 
-    import_button = ttk.Button(
-        frame,
-        text="账单处理",
-        command=lambda: run_in_thread(lambda: import_bills_with_logging(root, update_log))
-    )
-    import_button.grid(row=1, column=1, padx=10, pady=10)
+    for i, (text, stl, cmd) in enumerate(buttons):
+        btn = ttk.Button(frame, text=text, style=stl, command=cmd)
+        btn.grid(row=1, column=i, padx=(0 if i == 0 else 4, 0), pady=(0, 8), sticky='ew')
+        frame.columnconfigure(i, weight=1)
 
-    import_db_button = ttk.Button(
-        frame,
-        text="账单入库",
-        command=lambda: run_in_thread(lambda: process_import_with_logging(root, update_log, text_handler))
-    )
-    import_db_button.grid(row=2, column=0, padx=10, pady=10)
+    status_frame = tk.Frame(frame, bg=C_BG)
+    status_frame.grid(row=2, column=0, columnspan=5, sticky='ew')
+    status_frame.columnconfigure(2, weight=1)
 
-    # 新增测试数据库连接按钮
-    test_db_button = ttk.Button(
-        frame,
-        text="测试数据库连接",
-        command=lambda: run_in_thread(lambda: test_db_connection_gui(update_log))
-    )
-    test_db_button.grid(row=2, column=1, padx=10, pady=10)
-
-    # 新增倒计时功能
     countdown_var = tk.StringVar(value="10")
-    countdown_label = ttk.Label(frame, textvariable=countdown_var, font=("Arial", 24))
-    countdown_label.grid(row=3, column=0, padx=10, pady=10)
+    countdown_label = tk.Label(status_frame, textvariable=countdown_var,
+                                font=mono_big, bg=C_BG, fg=C_ACCENT)
+    countdown_label.grid(row=0, column=0, padx=(0, 4))
 
-    pause_button = ttk.Button(frame, text="暂停", command=lambda: setattr(auto_run, 'paused', True))
-    pause_button.grid(row=3, column=1, padx=10, pady=10)
+    status_indicator = tk.Label(status_frame, text="\u25cf \u7a7a\u95f2",
+                                 font=mono_small, bg=C_BG, fg=C_FG_SEC)
+    status_indicator.grid(row=0, column=1, padx=(0, 4))
 
-    # 自动运行控制
+    pause_btn = ttk.Button(status_frame, text="暂停", style='Pause.TButton',
+                           command=lambda: setattr(auto_run, 'paused', True))
+    pause_btn.grid(row=0, column=3, sticky='e')
+
     class AutoRun:
         def __init__(self):
             import threading
             self._lock = threading.Lock()
-            self.paused = False
-            self.running = False
+            self._paused = False
+            self._running = False
 
         @property
         def paused(self):
@@ -791,6 +831,10 @@ def main_gui():
         def paused(self, value):
             with self._lock:
                 self._paused = value
+            if value:
+                status_indicator.config(text="\u25cf \u5df2\u6682\u505c", fg=C_DANGER)
+            else:
+                status_indicator.config(text="\u25cf \u8fd0\u884c\u4e2d", fg=C_SUCCESS)
 
         @property
         def running(self):
@@ -801,30 +845,28 @@ def main_gui():
         def running(self, value):
             with self._lock:
                 self._running = value
+            if not value and not self._paused:
+                status_indicator.config(text="\u25cf \u7a7a\u95f2", fg=C_FG_SEC)
 
     auto_run = AutoRun()
 
     def countdown_and_auto_run():
         if auto_run.paused or auto_run.running:
             return
-
         auto_run.running = True
         countdown = 10
         countdown_var.set(str(countdown))
-
         for i in range(countdown, 0, -1):
             if auto_run.paused:
                 auto_run.running = False
                 return
             countdown_var.set(str(i))
             time.sleep(1)
-
         countdown_var.set("0")
         auto_run.paused = False
         run_auto_sequence()
 
     def sleep_cancellable(seconds):
-        """可中断的等待，每 1 秒检查一次暂停状态"""
         for _ in range(seconds):
             if auto_run.paused:
                 return False
@@ -836,44 +878,34 @@ def main_gui():
             try:
                 logging.info("=== 开始自动运行序列 ===")
                 update_log("=== 开始自动运行序列 ===")
-
-                # 运行 "下载账单" 按钮的逻辑
                 run_processing_with_logging(root, update_log)
                 if auto_run.paused:
                     break
                 update_log("下载账单流程完成，等待15秒...")
                 if not sleep_cancellable(15):
                     break
-
-                # 运行 "账单处理" 按钮的逻辑
                 import_bills_with_logging(root, update_log)
                 if auto_run.paused:
                     break
                 update_log("账单处理流程完成，等待15秒...")
                 if not sleep_cancellable(15):
                     break
-
-                # 运行 "账单入库" 按钮的逻辑
                 process_import_with_logging(root, update_log, text_handler)
                 if auto_run.paused:
                     break
                 update_log("账单入库流程完成，等待21600秒后重新开始循环...")
                 if not sleep_cancellable(21600):
                     break
-
             except Exception as e:
                 logging.error(f"自动运行序列异常: {str(e)}", exc_info=True)
                 update_log(f"自动运行序列异常: {str(e)}，60秒后重试...")
                 if not sleep_cancellable(60):
                     break
-
         auto_run.running = False
         logging.info("自动运行已停止")
 
-    # 启动倒计时
     threading.Thread(target=countdown_and_auto_run, daemon=True).start()
 
-    # 窗口关闭时优雅退出
     def on_closing():
         if messagebox.askokcancel("退出", "确定要退出程序吗？\n正在运行的任务将被中断。"):
             auto_run.paused = True
