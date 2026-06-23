@@ -770,7 +770,10 @@ def run_processing(root, update_log):
         logging.info(f"默认输入参数: {input_params}")
         update_log(f"默认输入参数: {input_params}")
 
-        for credential in credentials:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        def _process_one_shop(credential):
+            """处理单个店铺（内部串行，店铺间并行）"""
             logging.info(f"=== 开始处理店铺: {credential.cred_id} ===")
             update_log(f"开始处理店铺: {credential.cred_id}")
             inserted_records = []
@@ -780,8 +783,7 @@ def run_processing(root, update_log):
 
             if not diagnose_network("openapi.dewu.com"):
                 logging.error(f"网络诊断失败，跳过处理店铺: {credential.cred_id}")
-                update_log(f"网络诊断失败，跳过处理店铺: {credential.cred_id}")
-                continue
+                return {"execution_time": execution_time, "shop_name": credential.cred_id, "status": "失败", "insert_count": 0, "download_success_count": 0, "skipped_count": 0, "inserted_records": [], "download_results": {}, "skipped_records": {}}
 
             try:
                 api_response = fetch_api_data(input_params, credential)
@@ -798,67 +800,48 @@ def run_processing(root, update_log):
                         existing_bill_nos = check_existing_bill_nos(cursor, credential.cred_id)
                         new_records = [record for record in processed_data if record[0] not in existing_bill_nos]
                         skipped_bill_nos = [record[0] for record in processed_data if record[0] in existing_bill_nos]
-
                         inserted_records, bill_nos = save_records(new_records, existing_bill_nos)
                         if not inserted_records:
                             logging.warning(f"未成功插入任何记录 [{credential.cred_id}]")
-                            update_log(f"未成功插入任何记录 [{credential.cred_id}]")
                         else:
                             logging.info(f"成功插入/更新 {len(inserted_records)} 条记录")
-                            update_log(f"成功插入/更新 {len(inserted_records)} 条记录")
                         for bill_no in skipped_bill_nos:
                             skipped_records[bill_no] = "账单已存在"
 
                 if bill_nos:
-                    processor = BillProcessor(bill_nos, credential,
-                                              progress_callback=lambda x, y: update_log(f"进度: {x}/{y}"))
+                    processor = BillProcessor(bill_nos, credential, progress_callback=lambda x, y: update_log(f"进度: {x}/{y}"))
                     processor.process_all()
                     download_results = processor.results
-
-                    update_log("等待 120 秒后开始下载...")
+                    update_log(f"[{credential.cred_id}] 等待 120 秒后开始下载...")
                     time.sleep(120)
-
-                    download_files(download_results, credential.cred_id,
-                                   progress_callback=lambda x, y: update_log(f"下载进度: {x}/{y}"))
-
-                    results.append({
-                        "execution_time": execution_time,
-                        "shop_name": credential.cred_id,
-                        "status": "成功",
-                        "insert_count": len(inserted_records),
-                        "download_success_count": sum(1 for v in download_results.values() if v.get("success", False)),
-                        "skipped_count": len(skipped_records),
-                        "inserted_records": inserted_records,
-                        "download_results": download_results,
-                        "skipped_records": skipped_records
-                    })
+                    download_files(download_results, credential.cred_id, progress_callback=lambda x, y: update_log(f"下载进度: {x}/{y}"))
+                    return {"execution_time": execution_time, "shop_name": credential.cred_id, "status": "成功",
+                            "insert_count": len(inserted_records),
+                            "download_success_count": sum(1 for v in download_results.values() if v.get("success", False)),
+                            "skipped_count": len(skipped_records),
+                            "inserted_records": inserted_records, "download_results": download_results,
+                            "skipped_records": skipped_records}
                 else:
-                    results.append({
-                        "execution_time": execution_time,
-                        "shop_name": credential.cred_id,
-                        "status": "成功",
-                        "insert_count": len(inserted_records),
-                        "download_success_count": 0,
-                        "skipped_count": len(skipped_records),
-                        "inserted_records": inserted_records,
-                        "download_results": {},
-                        "skipped_records": skipped_records
-                    })
+                    return {"execution_time": execution_time, "shop_name": credential.cred_id, "status": "成功",
+                            "insert_count": 0, "download_success_count": 0, "skipped_count": 0,
+                            "inserted_records": [], "download_results": {}, "skipped_records": {}}
 
             except Exception as e:
                 logging.error(f"处理失败 [{credential.cred_id}]: {str(e)}")
                 update_log(f"处理失败 [{credential.cred_id}]: {str(e)}")
-                results.append({
-                    "execution_time": execution_time,
-                    "shop_name": credential.cred_id,
-                    "status": "失败",
-                    "insert_count": 0,
-                    "download_success_count": 0,
-                    "skipped_count": 0,
-                    "inserted_records": [],
-                    "download_results": {},
-                    "skipped_records": {}
-                })
+                return {"execution_time": execution_time, "shop_name": credential.cred_id, "status": "失败",
+                        "insert_count": 0, "download_success_count": 0, "skipped_count": 0,
+                        "inserted_records": [], "download_results": {}, "skipped_records": {}}
+
+        # 店铺间并行处理，max_workers=3 避免触发 API 限流
+        results = []
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            futures = {executor.submit(_process_one_shop, cred): cred for cred in credentials}
+            for f in as_completed(futures):
+                results.append(f.result())
+
+        # 按店铺名称排序，保持结果顺序稳定
+        results.sort(key=lambda r: r.get('shop_name', ''))
 
         logging.info(f"=== 流程结束 [退出码: {exit_code}] ===")
         update_log("账单处理流程结束")
