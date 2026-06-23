@@ -1108,7 +1108,13 @@ def import_sales_orders(cursor, data: pd.DataFrame, shop_name: str, bill_no: str
         "结算信息调整金额调整金额": "adjustment_amount",
         "结算信息应结金额应结金额": "payable_amount",
         "结算信息结算状态结算状态": "settlement_status",
-        "结算信息结算渠道结算渠道": "settlement_channel"
+        "结算信息结算渠道结算渠道": "settlement_channel",
+
+        # 新增字段（2026-06 得物格式升级）
+        "订单基础信息业务时间业务时间": "business_time",
+        "订单基础信息交易成功时间交易成功时间": "transaction_success_time",
+        "结算信息结算规则类型结算规则类型": "settlement_rule_type",
+        "备注信息备注内容备注内容": "remark_content",
     }
 
     columns = ", ".join(field_mapping.values()) + ", ZH, bill_no, bill_period"
@@ -1247,7 +1253,10 @@ def import_refund_orders(cursor, data: pd.DataFrame, shop_name: str, bill_no: st
         "结算信息调整金额调整金额": "adjustment_amount",
         "结算信息应结金额应结金额": "payable_amount",
         "结算信息结算状态结算状态": "settlement_status",
-        "退货信息收款账期收款账期": "payment_period"
+        "退货信息收款账期收款账期": "payment_period",
+
+        # 新增字段（2026-06 得物格式升级）
+        "备注信息备注内容备注内容": "remark_content",
     }
 
     columns = ", ".join(field_mapping.values()) + ", ZH, bill_no, bill_period"
