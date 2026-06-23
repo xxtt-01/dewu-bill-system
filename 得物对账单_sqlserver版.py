@@ -30,19 +30,20 @@ RESULT_DIR = os.path.join(BASE_DIR, 'dwd_bill_results')
 DOWNLOAD_DIR = os.path.join(BASE_DIR, 'dwd_bill_downloads')
 EXTRACT_DIR = os.path.join(BASE_DIR, 'dzd_tiqu')
 
-# 数据库连接参数（优先从环境变量 / .env 文件读取，敏感信息不留默认值）
+# 数据库连接参数（全部从环境变量读取，不设生产环境默认值）
 DB_CONFIG = {
-    'server': os.environ.get('DB_SERVER', '123.57.247.228'),
-    'database': os.environ.get('DB_DATABASE', 'YKYC'),
-    'username': os.environ.get('DB_USERNAME', 'sa'),
+    'server': os.environ.get('DB_SERVER'),
+    'database': os.environ.get('DB_DATABASE'),
+    'username': os.environ.get('DB_USERNAME'),
     'password': os.environ.get('DB_PASSWORD'),
     'port': int(os.environ.get('DB_PORT', '1433')),
     'timeout': 300  # 命令超时 300 秒
 }
 
-# 密码必须通过环境变量配置，不设任何硬编码默认值
-if not DB_CONFIG['password']:
-    msg = "数据库密码未配置！请在 .env 文件中设置 DB_PASSWORD=你的密码，或设置环境变量 DB_PASSWORD"
+# 所有数据库配置项必须有值（port 除外，有默认值）
+_missing_db = [k for k, v in DB_CONFIG.items() if not v and k != 'port']
+if _missing_db:
+    msg = f"数据库配置缺失：{', '.join(_missing_db)}，请在 .env 文件中设置"
     print(f"错误：{msg}")
     sys.exit(1)
 
@@ -51,6 +52,14 @@ API_URL = "https://openapi.dewu.com/dop/api/v1/bill/period_list"
 GENERATE_API_URL = "https://openapi.dewu.com/dop/api/v1/bill/generate"
 DOWNLOAD_API_URL = "https://openapi.dewu.com/dop/api/v1/bill/export"
 OSS_DOWNLOAD_EXPIRY = 3600
+
+# 空值集合（Excel 中的多种空值表示）
+EMPTY_VALUES = {'', 'NaN', 'nan', 'NAN', 'None', 'none', 'NONE'}
+
+def is_empty(value) -> bool:
+    """判断 Excel 单元格值是否为空"""
+    return pd.isna(value) or str(value).strip() in EMPTY_VALUES
+
 
 class AppCredential:
     """应用凭证数据类"""
@@ -177,6 +186,10 @@ def fetch_api_data(params: dict, credential: AppCredential) -> dict:
     all_params = {**base_params, **params}
     all_params["sign"] = generate_sign(all_params, credential.app_secret)
 
+    # 日志脱敏：隐藏 app_key 中间部分
+    safe_params = {**all_params}
+    if len(safe_params.get('app_key', '')) > 8:
+        safe_params['app_key'] = safe_params['app_key'][:4] + '****' + safe_params['app_key'][-4:]
     logging.info(f"API 请求参数: {safe_params}")
 
     # 多页获取：循环拉取所有页面的账单列表
@@ -436,7 +449,7 @@ def download_files(download_results: Dict[str, dict], shop_name: str, progress_c
     logging.info(f"所有文件下载完成！文件保存路径: {shop_dir}")
 
 def generate_result_file(inserted: List[Tuple[int, str]],
-                         download_results: Dict[str, str],
+                         download_results: Dict[str, dict],
                          skipped: Dict[str, str],
                          shop_name: str,
                          error: Exception = None) -> str:
@@ -1044,7 +1057,7 @@ def import_sales_orders(cursor, data: pd.DataFrame, shop_name: str, bill_no: str
         record = []
         for excel_header, db_field in field_mapping.items():
             value = row.get(excel_header, '')
-            if pd.isna(value) or str(value).strip() in ('', 'NaN', 'nan', 'NAN', 'None', 'none', 'NONE'):
+            if is_empty(value):
                 record.append(None)
             else:
                 record.append(value)
@@ -1183,7 +1196,7 @@ def import_refund_orders(cursor, data: pd.DataFrame, shop_name: str, bill_no: st
         record = []
         for excel_header, db_field in field_mapping.items():
             value = row.get(excel_header, '')
-            if pd.isna(value) or str(value).strip() in ('', 'NaN', 'nan', 'NAN', 'None', 'none', 'NONE'):
+            if is_empty(value):
                 record.append(None)
             else:
                 record.append(value)
@@ -1266,7 +1279,7 @@ def import_bill_overview(cursor, data: pd.DataFrame, shop_name: str):
     record = []
     for excel_header, db_field in field_mapping.items():
         value = data_row.iloc[0].get(excel_header, '')
-        if pd.isna(value) or str(value).strip() in ('', 'NaN', 'nan', 'NAN', 'None', 'none', 'NONE'):
+        if is_empty(value):
             record.append(None)
         else:
             record.append(value)
@@ -1341,7 +1354,7 @@ def import_other_fee(cursor, data: pd.DataFrame, shop_name: str, bill_no: str = 
         record = []
         for excel_header, db_field in field_mapping.items():
             value = row.get(excel_header, '')
-            if pd.isna(value) or str(value).strip() in ('', 'NaN', 'nan', 'NAN', 'None', 'none', 'NONE'):
+            if is_empty(value):
                 record.append(None)
             else:
                 record.append(value)
@@ -1401,7 +1414,7 @@ def import_deduction_detail(cursor, data: pd.DataFrame, shop_name: str, bill_no:
         record = []
         for excel_header, db_field in field_mapping.items():
             value = row.get(excel_header, '')
-            if pd.isna(value) or str(value).strip() in ('', 'NaN', 'nan', 'NAN', 'None', 'none', 'NONE'):
+            if is_empty(value):
                 record.append(None)
             else:
                 record.append(value)
@@ -1475,7 +1488,7 @@ def import_cargo_damage(cursor, data: pd.DataFrame, shop_name: str, bill_no: str
         record = []
         for excel_header, db_field in field_mapping.items():
             value = row.get(excel_header, '')
-            if pd.isna(value) or str(value).strip() in ('', 'NaN', 'nan', 'NAN', 'None', 'none', 'NONE'):
+            if is_empty(value):
                 record.append(None)
             else:
                 record.append(value)
@@ -1564,6 +1577,7 @@ def run_processing_with_logging(root, update_log):
 class MainWindow(QMainWindow):
     """得物对账单控制系统 - 主窗口（深色玻璃拟态风格）"""
     log_signal = pyqtSignal(str)
+    countdown_signal = pyqtSignal(int)
 
     def __init__(self):
         super().__init__()
@@ -1585,8 +1599,9 @@ class MainWindow(QMainWindow):
         self.C_SUCCESS = "#4ec77f"
         self.C_DANGER = "#f06a7b"
 
-        # 信号连接（线程安全日志）
+        # 信号连接（线程安全）
         self.log_signal.connect(self._append_log)
+        self.countdown_signal.connect(lambda v: self.countdown_label.setText(str(v)))
 
         # 日志处理器（传递给业务函数）
         self.log_handler = QtLogHandler(self.log_signal)
@@ -1794,14 +1809,14 @@ class MainWindow(QMainWindow):
                 return
             self.auto_run.running = True
             countdown = 10
-            self.countdown_label.setText(str(countdown))
+            self.countdown_signal.emit(countdown)
             for i in range(countdown, 0, -1):
                 if self.auto_run.paused:
                     self.auto_run.running = False
                     return
-                self.countdown_label.setText(str(i))
+                self.countdown_signal.emit(i)
                 time.sleep(1)
-            self.countdown_label.setText("0")
+            self.countdown_signal.emit(0)
             self.auto_run.paused = False
             self._run_auto_sequence()
         threading.Thread(target=run, daemon=True).start()

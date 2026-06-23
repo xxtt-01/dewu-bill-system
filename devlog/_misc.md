@@ -216,3 +216,14 @@
   5. **依赖** — `requirements.txt` 添加 PyQt6==6.11.0
 - **影响范围:** 需要安装 PyQt6（`pip install PyQt6==6.11.0`），打包时需要含 PyQt6 相关 dll
 
+## 2026-06-23 20:45: 修复审查发现的 CRITICAL 问题 + 代码优化
+- **文件:** `得物对账单_sqlserver版.py`
+- **原因:** auto 模式下代码审查发现 `safe_params` 未定义（CRITICAL，API 调用必崩）、倒计时线程不安全、DB 配置硬编码、空值检测重复
+- **修复:**
+  1. **`safe_params` 未定义** — 添加脱敏参数字典定义，app_key 掩码为 `sk****xxxx` 格式
+  2. **倒计时线程安全** — 增加 `countdown_signal = pyqtSignal(int)`，后台线程通过信号更新 GUI，避免直接调用 `QLabel.setText()`
+  3. **DB 配置硬编码** — 移除 `DB_SERVER`/`DB_DATABASE`/`DB_USERNAME` 的 fallback 默认值，全部从环境变量读取；缺失时启动报错
+  4. **空值检测去重** — 提取 `is_empty()` 工具函数 + `EMPTY_VALUES` 常量，替换 6 处重复代码
+  5. **类型标注修正** — `generate_result_file` 的 `download_results` 类型改为 `Dict[str, dict]`
+- **影响范围:** 无行为变化，健壮性和代码质量提升
+
