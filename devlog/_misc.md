@@ -203,3 +203,16 @@
   7. **自适应布局** — 窗口最小 800x500，按钮均匀等宽分布
 - **影响范围:** 纯视觉改造，功能逻辑无变化
 
+## 2026-06-23 20:15: GUI 替换为 PyQt6（突破 Tkinter 样式限制）
+- **文件:**
+  - `得物对账单_sqlserver版.py`
+  - `requirements.txt`
+- **原因:** Tkinter 无法实现圆角、rgba 半透明、自定义滚动条等现代 UI 效果，改用 PyQt6
+- **变更:**
+  1. **框架替换** — `tkinter` → `PyQt6`（QMainWindow + QPlainTextEdit + QPushButton）
+  2. **日志处理器** — `TextHandler(tk.Text)` → `QtLogHandler(pyqtSignal)` 线程安全
+  3. **视觉效果** — 卡片圆角 8px、按钮圆角 6px、rgba 半透明色、极窄 6px 滚动条、hover 高亮
+  4. **入口** — `main_gui()` 调用 → `MainWindow` 类 + `app.exec()`
+  5. **依赖** — `requirements.txt` 添加 PyQt6==6.11.0
+- **影响范围:** 需要安装 PyQt6（`pip install PyQt6==6.11.0`），打包时需要含 PyQt6 相关 dll
+

@@ -3,9 +3,10 @@ import logging
 import pyodbc  # 替换 pymysql 为 pyodbc
 import hashlib
 import time
-import tkinter as tk
-from tkinter import ttk
-from tkinter import messagebox
+from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget,
+    QVBoxLayout, QHBoxLayout, QPlainTextEdit, QPushButton, QLabel, QMessageBox)
+from PyQt6.QtCore import pyqtSignal, Qt, QTimer
+from PyQt6.QtGui import QFont
 from urllib.parse import quote_plus
 import requests
 from datetime import datetime, timedelta
@@ -59,24 +60,17 @@ class AppCredential:
         self.app_key = app_key
         self.app_secret = app_secret
 
-class TextHandler(logging.Handler):
-    """将日志记录转发到Tkinter文本控件"""
+class QtLogHandler(logging.Handler):
+    """将日志记录转发到 PyQt6 控件（通过信号线程安全）"""
 
-    def __init__(self, text_widget):
+    def __init__(self, signal):
         super().__init__()
-        self.text_widget = text_widget
+        self.signal = signal
         self.formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
 
     def emit(self, record):
-        """异步更新GUI"""
         msg = self.formatter.format(record)
-        self.text_widget.after(0, self._append_message, msg)
-
-    def _append_message(self, msg):
-        self.text_widget.config(state=tk.NORMAL)
-        self.text_widget.insert(tk.END, msg + "\n")
-        self.text_widget.yview(tk.END)
-        self.text_widget.config(state=tk.DISABLED)
+        self.signal.emit(msg)
 
 def setup_logging(text_handler) -> str:
     """初始化日志系统并绑定到文本控件"""
@@ -695,225 +689,6 @@ def process_import_with_logging(root, update_log, text_handler=None):
         update_log(f"处理失败: {str(e)}")
     finally:
         update_log("账单入库流程结束")
-
-def main_gui():
-    """创建初始GUI界面 - 深色玻璃拟态风格"""
-    import tkinter.font as tkfont
-
-    root = tk.Tk()
-    root.title("得物对账单控制系统")
-    root.configure(bg='#303438')
-    root.minsize(800, 500)
-
-    os.makedirs(LOG_DIR, exist_ok=True)
-    os.makedirs(RESULT_DIR, exist_ok=True)
-    os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-    os.makedirs(EXTRACT_DIR, exist_ok=True)
-
-    C_BG = '#303438'
-    C_FG = '#eef5fb'
-    C_FG_SEC = '#a3adbb'
-    C_ACCENT = '#b7ead4'
-    C_CARD = '#1c1c24'
-    C_BORDER = '#42474d'
-    C_SUCCESS = '#4ec77f'
-    C_DANGER = '#f06a7b'
-
-    mono = tkfont.Font(family="Consolas", size=11)
-    mono_small = tkfont.Font(family="Consolas", size=10)
-    mono_big = tkfont.Font(family="Consolas", size=28)
-
-    style = ttk.Style()
-    style.theme_use('clam')
-    style.configure('.', background=C_BG, foreground=C_FG, font=mono_small)
-    style.configure('TFrame', background=C_BG)
-    style.configure('Action.TButton',
-        background=C_CARD, foreground=C_FG, font=mono_small,
-        borderwidth=1, focusthickness=0, padding=(14, 6))
-    style.map('Action.TButton',
-        background=[('active', C_ACCENT)], foreground=[('active', '#1c1c24')])
-    style.configure('Pause.TButton',
-        background=C_CARD, foreground=C_DANGER, font=mono_small,
-        borderwidth=1, focusthickness=0, padding=(14, 6))
-    style.map('Pause.TButton',
-        background=[('active', C_DANGER)], foreground=[('active', '#1c1c24')])
-
-    root.columnconfigure(0, weight=1)
-    root.rowconfigure(0, weight=1)
-
-    frame = tk.Frame(root, bg=C_BG)
-    frame.grid(row=0, column=0, sticky='nsew', padx=14, pady=14)
-    frame.columnconfigure(0, weight=1)
-    frame.rowconfigure(0, weight=1)
-
-    log_card = tk.Frame(frame, bg=C_CARD, highlightbackground=C_BORDER, highlightthickness=1)
-    log_card.grid(row=0, column=0, columnspan=5, sticky='nsew', pady=(0, 8))
-    log_card.columnconfigure(0, weight=1)
-    log_card.rowconfigure(0, weight=1)
-
-    log_text = tk.Text(log_card, wrap=tk.WORD,
-                       bg=C_CARD, fg=C_FG, font=mono,
-                       insertbackground=C_ACCENT,
-                       relief='flat', borderwidth=0,
-                       padx=12, pady=10, highlightthickness=0)
-    log_text.grid(row=0, column=0, sticky='nsew')
-
-    scrollbar = ttk.Scrollbar(log_card, orient='vertical', command=log_text.yview)
-    scrollbar.grid(row=0, column=1, sticky='ns')
-    log_text.configure(yscrollcommand=scrollbar.set)
-    log_text.config(state=tk.DISABLED)
-
-    text_handler = TextHandler(log_text)
-    log_file = setup_logging(text_handler)
-
-    def update_log(message):
-        log_text.config(state=tk.NORMAL)
-        log_text.insert(tk.END, message + "\n")
-        log_text.yview(tk.END)
-        log_text.config(state=tk.DISABLED)
-
-    def run_in_thread(func):
-        def wrapper():
-            try:
-                func()
-            except Exception as e:
-                logging.error(f"线程任务异常: {str(e)}", exc_info=True)
-        thread = threading.Thread(target=wrapper)
-        thread.daemon = True
-        thread.start()
-
-    buttons = [
-        ("下载账单", 'Action.TButton',
-         lambda: run_in_thread(lambda: run_processing_with_logging(root, update_log))),
-        ("账单处理", 'Action.TButton',
-         lambda: run_in_thread(lambda: import_bills_with_logging(root, update_log))),
-        ("账单入库", 'Action.TButton',
-         lambda: run_in_thread(lambda: process_import_with_logging(root, update_log, text_handler))),
-        ("测试连接", 'Action.TButton',
-         lambda: run_in_thread(lambda: test_db_connection_gui(update_log))),
-    ]
-
-    for i, (text, stl, cmd) in enumerate(buttons):
-        btn = ttk.Button(frame, text=text, style=stl, command=cmd)
-        btn.grid(row=1, column=i, padx=(0 if i == 0 else 4, 0), pady=(0, 8), sticky='ew')
-        frame.columnconfigure(i, weight=1)
-
-    status_frame = tk.Frame(frame, bg=C_BG)
-    status_frame.grid(row=2, column=0, columnspan=5, sticky='ew')
-    status_frame.columnconfigure(2, weight=1)
-
-    countdown_var = tk.StringVar(value="10")
-    countdown_label = tk.Label(status_frame, textvariable=countdown_var,
-                                font=mono_big, bg=C_BG, fg=C_ACCENT)
-    countdown_label.grid(row=0, column=0, padx=(0, 4))
-
-    status_indicator = tk.Label(status_frame, text="\u25cf \u7a7a\u95f2",
-                                 font=mono_small, bg=C_BG, fg=C_FG_SEC)
-    status_indicator.grid(row=0, column=1, padx=(0, 4))
-
-    pause_btn = ttk.Button(status_frame, text="暂停", style='Pause.TButton',
-                           command=lambda: setattr(auto_run, 'paused', True))
-    pause_btn.grid(row=0, column=3, sticky='e')
-
-    class AutoRun:
-        def __init__(self):
-            import threading
-            self._lock = threading.Lock()
-            self._paused = False
-            self._running = False
-
-        @property
-        def paused(self):
-            with self._lock:
-                return self._paused
-
-        @paused.setter
-        def paused(self, value):
-            with self._lock:
-                self._paused = value
-            if value:
-                status_indicator.config(text="\u25cf \u5df2\u6682\u505c", fg=C_DANGER)
-            else:
-                status_indicator.config(text="\u25cf \u8fd0\u884c\u4e2d", fg=C_SUCCESS)
-
-        @property
-        def running(self):
-            with self._lock:
-                return self._running
-
-        @running.setter
-        def running(self, value):
-            with self._lock:
-                self._running = value
-            if not value and not self._paused:
-                status_indicator.config(text="\u25cf \u7a7a\u95f2", fg=C_FG_SEC)
-
-    auto_run = AutoRun()
-
-    def countdown_and_auto_run():
-        if auto_run.paused or auto_run.running:
-            return
-        auto_run.running = True
-        countdown = 10
-        countdown_var.set(str(countdown))
-        for i in range(countdown, 0, -1):
-            if auto_run.paused:
-                auto_run.running = False
-                return
-            countdown_var.set(str(i))
-            time.sleep(1)
-        countdown_var.set("0")
-        auto_run.paused = False
-        run_auto_sequence()
-
-    def sleep_cancellable(seconds):
-        for _ in range(seconds):
-            if auto_run.paused:
-                return False
-            time.sleep(1)
-        return True
-
-    def run_auto_sequence():
-        while not auto_run.paused:
-            try:
-                logging.info("=== 开始自动运行序列 ===")
-                update_log("=== 开始自动运行序列 ===")
-                run_processing_with_logging(root, update_log)
-                if auto_run.paused:
-                    break
-                update_log("下载账单流程完成，等待15秒...")
-                if not sleep_cancellable(15):
-                    break
-                import_bills_with_logging(root, update_log)
-                if auto_run.paused:
-                    break
-                update_log("账单处理流程完成，等待15秒...")
-                if not sleep_cancellable(15):
-                    break
-                process_import_with_logging(root, update_log, text_handler)
-                if auto_run.paused:
-                    break
-                update_log("账单入库流程完成，等待21600秒后重新开始循环...")
-                if not sleep_cancellable(21600):
-                    break
-            except Exception as e:
-                logging.error(f"自动运行序列异常: {str(e)}", exc_info=True)
-                update_log(f"自动运行序列异常: {str(e)}，60秒后重试...")
-                if not sleep_cancellable(60):
-                    break
-        auto_run.running = False
-        logging.info("自动运行已停止")
-
-    threading.Thread(target=countdown_and_auto_run, daemon=True).start()
-
-    def on_closing():
-        if messagebox.askokcancel("退出", "确定要退出程序吗？\n正在运行的任务将被中断。"):
-            auto_run.paused = True
-            auto_run.running = False
-            root.destroy()
-
-    root.protocol("WM_DELETE_WINDOW", on_closing)
-    root.mainloop()
 
 def run_processing(root, update_log):
     exit_code = 0
@@ -1748,14 +1523,14 @@ def test_db_connection_gui(update_log):
     try:
         update_log("正在测试数据库连接...")
         if test_db_connection():
-            update_log("✅ 数据库连接成功！")
-            messagebox.showinfo("成功", "数据库连接测试成功！")
+            update_log("数据库连接成功！")
+            QMessageBox.information(None, "成功", "数据库连接测试成功！")
         else:
-            update_log("❌ 数据库连接失败！")
-            messagebox.showerror("失败", "数据库连接测试失败，请检查配置！")
+            update_log("数据库连接失败！")
+            QMessageBox.critical(None, "失败", "数据库连接测试失败！")
     except Exception as e:
-        update_log(f"❌ 测试异常：{str(e)}")
-        messagebox.showerror("异常", f"测试过程中发生错误：{str(e)}")
+        update_log(f"测试异常: {str(e)}")
+        QMessageBox.critical(None, "错误", f"测试异常: {str(e)}")
 
 def import_bills_with_logging(root, update_log):
     """运行账单导入流程并更新日志"""
@@ -1785,5 +1560,299 @@ def run_processing_with_logging(root, update_log):
     finally:
         update_log("账单处理流程结束")
 
+
+class MainWindow(QMainWindow):
+    """得物对账单控制系统 - 主窗口（深色玻璃拟态风格）"""
+    log_signal = pyqtSignal(str)
+
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("得物对账单控制系统")
+        self.setMinimumSize(800, 500)
+
+        os.makedirs(LOG_DIR, exist_ok=True)
+        os.makedirs(RESULT_DIR, exist_ok=True)
+        os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+        os.makedirs(EXTRACT_DIR, exist_ok=True)
+
+        # 颜色方案
+        self.C_BG = "#303438"
+        self.C_FG = "#eef5fb"
+        self.C_FG_SEC = "#a3adbb"
+        self.C_ACCENT = "#b7ead4"
+        self.C_CARD = "#1c1c24"
+        self.C_BORDER = "#42474d"
+        self.C_SUCCESS = "#4ec77f"
+        self.C_DANGER = "#f06a7b"
+
+        # 信号连接（线程安全日志）
+        self.log_signal.connect(self._append_log)
+
+        # 日志处理器（传递给业务函数）
+        self.log_handler = QtLogHandler(self.log_signal)
+
+        self._setup_ui()
+        self._setup_auto_run()
+
+        # 启动倒计时
+        QTimer.singleShot(0, self._start_countdown)
+
+    def _setup_ui(self):
+        """构建界面"""
+        central = QWidget()
+        central.setStyleSheet(f"background-color: {self.C_BG};")
+        self.setCentralWidget(central)
+
+        root_layout = QVBoxLayout(central)
+        root_layout.setContentsMargins(14, 14, 14, 14)
+        root_layout.setSpacing(8)
+
+        # ── 日志卡片 ──
+        log_card = QWidget()
+        log_card.setObjectName("logCard")
+        log_card.setStyleSheet(f"""
+            QWidget#logCard {{
+                background-color: {self.C_CARD};
+                border: 1px solid {self.C_BORDER};
+                border-radius: 8px;
+            }}
+        """)
+
+        card_layout = QVBoxLayout(log_card)
+        card_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.log_text = QPlainTextEdit()
+        self.log_text.setReadOnly(True)
+        self.log_text.setFont(QFont("Consolas", 11))
+        self.log_text.setStyleSheet(f"""
+            QPlainTextEdit {{
+                background-color: {self.C_CARD};
+                color: {self.C_FG};
+                border: none;
+                padding: 12px 10px;
+                selection-background-color: {self.C_ACCENT}40;
+            }}
+            QScrollBar:vertical {{
+                width: 6px;
+                background: transparent;
+            }}
+            QScrollBar::handle:vertical {{
+                background: #808a9b45;
+                border-radius: 3px;
+                min-height: 30px;
+            }}
+            QScrollBar::handle:vertical:hover {{
+                background: #808a9b80;
+            }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+                height: 0px;
+            }}
+        """)
+        card_layout.addWidget(self.log_text)
+        root_layout.addWidget(log_card, 1)
+
+        # ── 按钮行 ──
+        btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(4)
+
+        btn_style = f"""
+            QPushButton {{
+                background-color: {self.C_CARD};
+                color: {self.C_FG};
+                font-family: Consolas;
+                font-size: 12px;
+                padding: 8px 14px;
+                border: 1px solid {self.C_BORDER};
+                border-radius: 6px;
+            }}
+            QPushButton:hover {{
+                background-color: {self.C_ACCENT};
+                color: #1c1c24;
+                border-color: {self.C_ACCENT};
+            }}
+            QPushButton:pressed {{
+                background-color: #8dd4b0;
+            }}
+        """
+
+        buttons = [
+            ("下载账单", lambda: self._run_thread(
+                lambda: run_processing_with_logging(self, self._update_log))),
+            ("账单处理", lambda: self._run_thread(
+                lambda: import_bills_with_logging(self, self._update_log))),
+            ("账单入库", lambda: self._run_thread(
+                lambda: process_import_with_logging(self, self._update_log, self.log_handler))),
+            ("测试连接", lambda: self._run_thread(
+                lambda: test_db_connection_gui(self._update_log))),
+        ]
+
+        for text, callback in buttons:
+            btn = QPushButton(text)
+            btn.setStyleSheet(btn_style)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.clicked.connect(callback)
+            btn_layout.addWidget(btn)
+
+        root_layout.addLayout(btn_layout)
+
+        # ── 状态行 ──
+        status_layout = QHBoxLayout()
+        status_layout.setSpacing(4)
+
+        self.countdown_label = QLabel("10")
+        self.countdown_label.setFont(QFont("Consolas", 28))
+        self.countdown_label.setStyleSheet(f"color: {self.C_ACCENT}; background: transparent;")
+        status_layout.addWidget(self.countdown_label)
+
+        self.status_label = QLabel("\u25cf \u7a7a\u95f2")
+        self.status_label.setFont(QFont("Consolas", 10))
+        self.status_label.setStyleSheet(f"color: {self.C_FG_SEC}; background: transparent;")
+        status_layout.addWidget(self.status_label)
+
+        status_layout.addStretch(1)
+
+        pause_btn = QPushButton("\u6682\u505c")
+        pause_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {self.C_CARD};
+                color: {self.C_DANGER};
+                font-family: Consolas;
+                font-size: 12px;
+                padding: 8px 14px;
+                border: 1px solid {self.C_BORDER};
+                border-radius: 6px;
+            }}
+            QPushButton:hover {{
+                background-color: {self.C_DANGER};
+                color: white;
+            }}
+        """)
+        pause_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        pause_btn.clicked.connect(lambda: setattr(self.auto_run, 'paused', True))
+        status_layout.addWidget(pause_btn)
+
+        root_layout.addLayout(status_layout)
+
+    def _setup_auto_run(self):
+        """自动运行控制"""
+        class AutoRun:
+            def __init__(self, window):
+                import threading
+                self._window = window
+                self._lock = threading.Lock()
+                self._paused = False
+                self._running = False
+
+            @property
+            def paused(self):
+                with self._lock:
+                    return self._paused
+
+            @paused.setter
+            def paused(self, value):
+                with self._lock:
+                    self._paused = value
+                if value:
+                    self._window.status_label.setText("\u25cf \u5df2\u6682\u505c")
+                    self._window.status_label.setStyleSheet(f"color: {self._window.C_DANGER}; background: transparent;")
+                else:
+                    self._window.status_label.setText("\u25cf \u8fd0\u884c\u4e2d")
+                    self._window.status_label.setStyleSheet(f"color: {self._window.C_SUCCESS}; background: transparent;")
+
+            @property
+            def running(self):
+                with self._lock:
+                    return self._running
+
+            @running.setter
+            def running(self, value):
+                with self._lock:
+                    self._running = value
+                if not value and not self._paused:
+                    self._window.status_label.setText("\u25cf \u7a7a\u95f2")
+                    self._window.status_label.setStyleSheet(f"color: {self._window.C_FG_SEC}; background: transparent;")
+
+        self.auto_run = AutoRun(self)
+
+    def _append_log(self, message):
+        """主线程中更新日志（由信号触发）"""
+        self.log_text.appendPlainText(message)
+
+    def _update_log(self, message):
+        """从工作线程调用的日志更新（线程安全）"""
+        self.log_signal.emit(message)
+
+    def _run_thread(self, func):
+        """在后台线程中运行任务"""
+        thread = threading.Thread(target=func, daemon=True)
+        thread.start()
+
+    def _start_countdown(self):
+        """启动倒计时和自动运行"""
+        def run():
+            if self.auto_run.paused or self.auto_run.running:
+                return
+            self.auto_run.running = True
+            countdown = 10
+            self.countdown_label.setText(str(countdown))
+            for i in range(countdown, 0, -1):
+                if self.auto_run.paused:
+                    self.auto_run.running = False
+                    return
+                self.countdown_label.setText(str(i))
+                time.sleep(1)
+            self.countdown_label.setText("0")
+            self.auto_run.paused = False
+            self._run_auto_sequence()
+        threading.Thread(target=run, daemon=True).start()
+
+    def _sleep_cancellable(self, seconds):
+        for _ in range(seconds):
+            if self.auto_run.paused:
+                return False
+            time.sleep(1)
+        return True
+
+    def _run_auto_sequence(self):
+        while not self.auto_run.paused:
+            try:
+                logging.info("=== \u5f00\u59cb\u81ea\u52a8\u8fd0\u884c\u5e8f\u5217 ===")
+                self._update_log("=== \u5f00\u59cb\u81ea\u52a8\u8fd0\u884c\u5e8f\u5217 ===")
+                run_processing_with_logging(self, self._update_log)
+                if self.auto_run.paused: break
+                self._update_log("\u4e0b\u8f7d\u8d26\u5355\u6d41\u7a0b\u5b8c\u6210\uff0c\u7b49\u5f8515\u79d2...")
+                if not self._sleep_cancellable(15): break
+                import_bills_with_logging(self, self._update_log)
+                if self.auto_run.paused: break
+                self._update_log("\u8d26\u5355\u5904\u7406\u6d41\u7a0b\u5b8c\u6210\uff0c\u7b49\u5f8515\u79d2...")
+                if not self._sleep_cancellable(15): break
+                process_import_with_logging(self, self._update_log, self.log_handler)
+                if self.auto_run.paused: break
+                self._update_log("\u8d26\u5355\u5165\u5e93\u6d41\u7a0b\u5b8c\u6210\uff0c\u7b49\u5f8521600\u79d2\u540e\u91cd\u65b0\u5f00\u59cb\u5faa\u73af...")
+                if not self._sleep_cancellable(21600): break
+            except Exception as e:
+                logging.error(f"\u81ea\u52a8\u8fd0\u884c\u5e8f\u5217\u5f02\u5e38: {str(e)}", exc_info=True)
+                self._update_log(f"\u81ea\u52a8\u8fd0\u884c\u5e8f\u5217\u5f02\u5e38: {str(e)}"
+                                 f"\uff0c60\u79d2\u540e\u91cd\u8bd5...")
+                if not self._sleep_cancellable(60): break
+        self.auto_run.running = False
+        logging.info("\u81ea\u52a8\u8fd0\u884c\u5df2\u505c\u6b62")
+
+    def closeEvent(self, event):
+        """窗口关闭事件"""
+        reply = QMessageBox.question(self, "\u9000\u51fa",
+                                     "\u786e\u5b9a\u8981\u9000\u51fa\u7a0b\u5e8f\u5417\uff1f\n\u6b63\u5728\u8fd0\u884c\u7684\u4efb\u52a1\u5c06\u88ab\u4e2d\u65ad\u3002",
+                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if reply == QMessageBox.StandardButton.Yes:
+            self.auto_run.paused = True
+            self.auto_run.running = False
+            event.accept()
+        else:
+            event.ignore()
+
+
 if __name__ == "__main__":
-    main_gui()
+    app = QApplication(sys.argv)
+    window = MainWindow()
+    window.show()
+    sys.exit(app.exec())
