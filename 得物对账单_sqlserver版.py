@@ -61,6 +61,70 @@ def is_empty(value) -> bool:
     return pd.isna(value) or str(value).strip() in EMPTY_VALUES
 
 
+def detect_headers(df: pd.DataFrame) -> tuple:
+    """自动检测 Excel 表头结构
+
+    Returns:
+        (note_rows, header_rows, first_data_row)
+        - note_rows: 说明行索引列表
+        - header_rows: 列名行索引列表（需要拼接为扁平表头的行）
+        - first_data_row: 第一条数据行的索引
+    """
+    note_rows = []
+    header_rows = []
+    max_header_checks = min(len(df), 12)
+
+    for i in range(max_header_checks):
+        row = df.iloc[i]
+        non_null = sum(1 for v in row if pd.notna(v))
+        total_cols = len(row)
+        first_val = str(row.iloc[0]).strip() if pd.notna(row.iloc[0]) else ''
+
+        # 说明行：首列以"说明"开头
+        if first_val.startswith('说明'):
+            note_rows.append(i)
+            continue
+
+        # 空白行：全空
+        if non_null == 0:
+            continue
+
+        # 表头行：所有列都有值，不含浮点数（数据行的典型特征）
+        # 排除已识别的说明行后，连续的全非空行都是表头
+        has_float = any(isinstance(v, float) for v in row if pd.notna(v))
+        if non_null >= total_cols * 0.8 and not has_float:
+            header_rows.append(i)
+        else:
+            # 遇到第一条数据行，停止检测
+            break
+
+    first_data = header_rows[-1] + 1 if header_rows else (note_rows[-1] + 1 if note_rows else 1)
+
+    return note_rows, header_rows, first_data
+
+
+def merge_header_names(df: pd.DataFrame, header_rows: list) -> list:
+    """将多行表头拼接为扁平列名
+
+    对于 N 行表头，按列拼接每行的字符串值。
+    示例：3行表头 ["订单基础信息","订单号","订单号"] → "订单基础信息订单号订单号"
+    """
+    if not header_rows:
+        return []
+    if len(header_rows) == 1:
+        return [str(v).strip() for v in df.iloc[header_rows[0]].tolist()]
+
+    # 多行拼接：每列逐行合并
+    merged = []
+    for col_idx in range(len(df.columns)):
+        parts = []
+        for row_idx in header_rows:
+            v = df.iloc[row_idx, col_idx]
+            parts.append(str(v).strip() if pd.notna(v) else '')
+        merged.append(''.join(parts))
+    return merged
+
+
 class AppCredential:
     """应用凭证数据类"""
 
@@ -861,32 +925,21 @@ def import_bills(root, update_log):
                             raise ValueError(f"文件中无有效工作表 {SHEETS_TO_KEEP}")
 
                         for sheet_name, data in sheets_to_process.items():
-                            data = data.iloc[1:]
-                            if sheet_name == '账单总览':
-                                # 只保留前3行: [表头行, 子表头行, 数据行]，去掉结算渠道
-                                data = data.iloc[:3].reset_index(drop=True)
-                                # 合并两行表头为扁平表头（与销售订单的拼接逻辑一致）
-                                flat_header = data.iloc[:2].fillna('').astype(str).agg(''.join, axis=0)
-                                data = pd.concat([
-                                    data.iloc[:2],
-                                    pd.DataFrame([flat_header]),
-                                    data.iloc[2:]
-                                ]).reset_index(drop=True)
-                                data = data.iloc[2:]
-                            elif sheet_name in ('本期结算其他项费用', '扣减其他费用明细', '本期货损买进订单'):
-                                # 2行表头（说明行+列名行），iloc[1:]已去掉说明行
-                                # 第1行就是列名行，无需合并，直接保留
-                                pass
-                            else:
-                                if len(data) >= 3:
-                                    summary_row = data.iloc[:3].fillna('').astype(str).agg(''.join, axis=0)
-                                    data = pd.concat([
-                                        data.iloc[:3],
-                                        pd.DataFrame([summary_row]),
-                                        data.iloc[3:]
-                                    ]).reset_index(drop=True)
+                            # 自动检测表头结构，不再依赖硬编码行号
+                            note_rows, header_rows, first_data = detect_headers(data)
 
-                                data = data.iloc[3:]
+                            if len(header_rows) >= 2:
+                                # 多行表头：拼接为扁平列名
+                                flat_headers = merge_header_names(data, header_rows)
+                                header_df = pd.DataFrame([flat_headers])
+                                data_body = data.iloc[first_data:].reset_index(drop=True)
+                                data = pd.concat([header_df, data_body]).reset_index(drop=True)
+                            elif len(header_rows) == 1:
+                                # 单行表头：跳过说明行后的第1行就是列名
+                                data = data.iloc[first_data - 1:].reset_index(drop=True)
+                            else:
+                                logging.warning(f"未能检测到表头结构: {sheet_name}")
+                                continue
 
                             data.to_excel(writer, sheet_name=sheet_name, index=False, header=False)
 
@@ -929,14 +982,32 @@ def extract_bill_period_from_file(file_path: str) -> str:
     """从 _tiqu.xlsx 的账单总览 sheet 提取账单起止时间"""
     try:
         overview = pd.read_excel(file_path, sheet_name='账单总览', header=None)
-        if len(overview) < 2:
+        note_rows, header_rows, first_data = detect_headers(overview)
+
+        if not header_rows or len(overview) <= first_data:
             return ''
-        # 用列名取值代替硬编码索引，避免得物调整列顺序
-        overview.columns = overview.iloc[0]
-        data = overview.iloc[1:]
-        val = data.iloc[0].get('账单起止时间账单起止时间', '')
-        if pd.notna(val):
-            return str(val).strip()
+
+        # 用自动检测的扁平列名定位列
+        flat_names = merge_header_names(overview, header_rows)
+        data_row = overview.iloc[first_data]
+
+        # 优先精确匹配
+        target_col = '账单起止时间账单起止时间'
+        if target_col in flat_names:
+            col_idx = flat_names.index(target_col)
+        else:
+            # 模糊匹配：找到包含"账单起止时间"的列
+            col_idx = -1
+            for i, name in enumerate(flat_names):
+                if '账单起止时间' in str(name):
+                    col_idx = i
+                    break
+
+        if col_idx >= 0:
+            val = data_row.iloc[col_idx]
+            if pd.notna(val):
+                return str(val).strip()
+
     except Exception as e:
         logging.warning(f"提取账单起止时间失败: {e}")
     return ''

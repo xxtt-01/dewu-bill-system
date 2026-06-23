@@ -227,3 +227,14 @@
   5. **类型标注修正** — `generate_result_file` 的 `download_results` 类型改为 `Dict[str, dict]`
 - **影响范围:** 无行为变化，健壮性和代码质量提升
 
+## 2026-06-23 21:00: 表头解析改为自动检测，消除格式脆弱性
+- **文件:** `得物对账单_sqlserver版.py`
+- **原因:** 原表头处理依赖 `iloc[1:]`、`iloc[:3]` 等硬编码行号，得物调整 Excel 行列结构时数据会错位
+- **方案:** 基于 Excel 行特征自动检测表头结构
+- **实现:**
+  1. **`detect_headers(df)`** — 检测各行类型：说明行（首列含"说明"）、表头行（全非空无浮点）、数据行（含浮点/数字/长值）
+  2. **`merge_header_names(df, header_rows)`** — 多行表头按列拼接为扁平列名（N 行→1 行）
+  3. **`import_bills` 替换** — 删除 3 种 sheet 的 if/elif/else 分支，统一调用 `detect_headers` + `merge_header_names`
+  4. **`extract_bill_period_from_file` 强化** — 增加模糊列名匹配 fallback（精确匹配失败时找包含"账单起止时间"的列）
+- **影响范围:** 无行为变化；tiqu 文件格式不变，field_mapping 键值不变
+
