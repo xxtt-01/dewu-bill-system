@@ -469,46 +469,51 @@ class BillProcessor:
                 self.progress_callback(self.completed_bills, self.total_bills)
 
 def download_files(download_results: Dict[str, dict], shop_name: str, progress_callback=None):
-    """下载文件到指定目录"""
+    """下载文件到指定目录（并行下载）"""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
     shop_dir = os.path.join(DOWNLOAD_DIR, shop_name)
     os.makedirs(shop_dir, exist_ok=True)
 
     total_files = len(download_results)
     completed_files = 0
 
-    for bill_no, result in download_results.items():
+    def download_one(bill_no, result):
+        """下载单个文件"""
         if not result.get('success', False):
-            logging.warning(f"跳过失败记录 [{shop_name}][{bill_no}]: {result.get('error', '未知错误')}")
-            completed_files += 1
+            return f"跳过: {result.get('error', '未知错误')}"
+
+        url = result['url']
+        filename = f"{bill_no}.xlsx"
+        filepath = os.path.join(shop_dir, filename)
+        tmppath = filepath + '.tmp'
+
+        response = requests.get(url, stream=True, timeout=60)
+        response.raise_for_status()
+
+        with open(tmppath, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+
+        os.replace(tmppath, filepath)
+        return f"成功"
+
+    # 并行下载，最多 4 个并发
+    futures = {}
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        for bill_no, result in download_results.items():
+            futures[executor.submit(download_one, bill_no, result)] = bill_no
+
+        for f in as_completed(futures):
+            bill_no = futures[f]
+            try:
+                msg = f.result()
+                completed_files += 1
+                logging.info(f"下载 [{bill_no}]: {msg}")
+            except Exception as e:
+                logging.error(f"下载失败 [{bill_no}]: {str(e)}")
+                completed_files += 1
             if progress_callback:
                 progress_callback(completed_files, total_files)
-            continue
-
-        try:
-            url = result['url']
-            logging.info(f"开始下载 [{shop_name}][{bill_no}]")
-
-            response = requests.get(url, stream=True, timeout=60)
-            response.raise_for_status()
-
-            filename = f"{bill_no}.xlsx"
-            filepath = os.path.join(shop_dir, filename)
-            tmppath = filepath + '.tmp'
-
-            with open(tmppath, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    f.write(chunk)
-
-            os.replace(tmppath, filepath)
-            logging.info(f"下载完成 [{shop_name}][{bill_no}] 到 {filepath}")
-            completed_files += 1
-
-        except Exception as e:
-            logging.error(f"下载失败 [{shop_name}][{bill_no}]: {str(e)}")
-            completed_files += 1
-
-        if progress_callback:
-            progress_callback(completed_files, total_files)
 
     logging.info(f"所有文件下载完成！文件保存路径: {shop_dir}")
 
@@ -603,19 +608,23 @@ def process_import(root, update_log, text_handler=None):
                                     continue
 
                             imported = False
-                            with pd.ExcelFile(file_path) as xls:
-                                sheet_names = set(xls.sheet_names)
+                                                        # 一次性读取所有 sheet，避免每个 sheet 单独读文件
+                            xls_cache = pd.read_excel(file_path, sheet_name=None, header=None)
+                            sheet_names = set(xls_cache.keys())
 
                             # 从账单总览 sheet 提取 bill_period
                             bill_period = extract_bill_period_from_file(file_path)
 
-                            if '销售订单' in sheet_names:
-                                # 带重试的销售订单导入
+                            # 通用重试包装：每个 sheet 用缓存数据直接入库
+                            def _retry_import(import_func, sheet_name, *args):
+                                nonlocal imported
+                                if sheet_name not in sheet_names:
+                                    return
                                 retry_count = 0
                                 max_retries = 3
                                 while retry_count < max_retries:
                                     try:
-                                        import_sales_orders_from_file(file_path, shop_name, bill_no, bill_period)
+                                        import_func(*args)
                                         imported = True
                                         break
                                     except pyodbc.Error as e:
@@ -627,93 +636,15 @@ def process_import(root, update_log, text_handler=None):
                                         else:
                                             raise
 
-                            if '退货退款订单' in sheet_names:
-                                # 带重试的退货订单导入
-                                retry_count = 0
-                                max_retries = 3
-                                while retry_count < max_retries:
-                                    try:
-                                        import_refund_orders_from_file(file_path, shop_name, bill_no, bill_period)
-                                        imported = True
-                                        break
-                                    except pyodbc.Error as e:
-                                        if "08S01" in str(e) and retry_count < max_retries - 1:
-                                            retry_count += 1
-                                            logging.warning(f"检测到连接断开 ({retry_count}/{max_retries})，尝试重新连接...")
-                                            update_log(f"检测到连接断开，5 秒后重试 ({retry_count}/{max_retries})...")
-                                            time.sleep(5)
-                                        else:
-                                            raise
+                            _retry_import(import_sales_orders, '销售订单', cursor, xls_cache['销售订单'], shop_name, bill_no, bill_period)
+                            _retry_import(import_refund_orders, '退货退款订单', cursor, xls_cache['退货退款订单'], shop_name, bill_no, bill_period)
 
                             if '账单总览' in sheet_names:
-                                # 带重试的账单总览导入
-                                retry_count = 0
-                                max_retries = 3
-                                while retry_count < max_retries:
-                                    try:
-                                        import_bill_overview_from_file(file_path, shop_name)
-                                        imported = True
-                                        break
-                                    except pyodbc.Error as e:
-                                        if "08S01" in str(e) and retry_count < max_retries - 1:
-                                            retry_count += 1
-                                            logging.warning(f"检测到连接断开 ({retry_count}/{max_retries})，尝试重新连接...")
-                                            update_log(f"检测到连接断开，5 秒后重试 ({retry_count}/{max_retries})...")
-                                            time.sleep(5)
-                                        else:
-                                            raise
+                                _retry_import(import_bill_overview, '账单总览', cursor, xls_cache['账单总览'], shop_name)
 
-                            if '本期结算其他项费用' in sheet_names:
-                                retry_count = 0
-                                max_retries = 3
-                                while retry_count < max_retries:
-                                    try:
-                                        import_other_fee_from_file(file_path, shop_name, bill_no, bill_period)
-                                        imported = True
-                                        break
-                                    except pyodbc.Error as e:
-                                        if "08S01" in str(e) and retry_count < max_retries - 1:
-                                            retry_count += 1
-                                            logging.warning(f"检测到连接断开 ({retry_count}/{max_retries})，尝试重新连接...")
-                                            update_log(f"检测到连接断开，5 秒后重试 ({retry_count}/{max_retries})...")
-                                            time.sleep(5)
-                                        else:
-                                            raise
-
-                            if '扣减其他费用明细' in sheet_names:
-                                retry_count = 0
-                                max_retries = 3
-                                while retry_count < max_retries:
-                                    try:
-                                        import_deduction_detail_from_file(file_path, shop_name, bill_no, bill_period)
-                                        imported = True
-                                        break
-                                    except pyodbc.Error as e:
-                                        if "08S01" in str(e) and retry_count < max_retries - 1:
-                                            retry_count += 1
-                                            logging.warning(f"检测到连接断开 ({retry_count}/{max_retries})，尝试重新连接...")
-                                            update_log(f"检测到连接断开，5 秒后重试 ({retry_count}/{max_retries})...")
-                                            time.sleep(5)
-                                        else:
-                                            raise
-
-                            if '本期货损买进订单' in sheet_names:
-                                retry_count = 0
-                                max_retries = 3
-                                while retry_count < max_retries:
-                                    try:
-                                        import_cargo_damage_from_file(file_path, shop_name, bill_no, bill_period)
-                                        imported = True
-                                        break
-                                    except pyodbc.Error as e:
-                                        if "08S01" in str(e) and retry_count < max_retries - 1:
-                                            retry_count += 1
-                                            logging.warning(f"检测到连接断开 ({retry_count}/{max_retries})，尝试重新连接...")
-                                            update_log(f"检测到连接断开，5 秒后重试 ({retry_count}/{max_retries})...")
-                                            time.sleep(5)
-                                        else:
-                                            raise
-
+                            _retry_import(import_other_fee, '本期结算其他项费用', cursor, xls_cache['本期结算其他项费用'], shop_name, bill_no, bill_period)
+                            _retry_import(import_deduction_detail, '扣减其他费用明细', cursor, xls_cache['扣减其他费用明细'], shop_name, bill_no, bill_period)
+                            _retry_import(import_cargo_damage, '本期货损买进订单', cursor, xls_cache['本期货损买进订单'], shop_name, bill_no, bill_period)
                             if imported:
                                 try:
                                     with DBConnection() as cursor:
@@ -1161,7 +1092,7 @@ def import_sales_orders(cursor, data: pd.DataFrame, shop_name: str, bill_no: str
         logging.info(f"发货时间降级: {fallback_count}/{total_records} 行使用了业务时间")
 
     # 分批插入，每 500 条提交一次，避免事务过长导致连接超时
-    BATCH_SIZE = 500
+    BATCH_SIZE = 1000
 
     for i in range(0, total_records, BATCH_SIZE):
         batch = records[i:i+BATCH_SIZE]
@@ -1307,7 +1238,7 @@ def import_refund_orders(cursor, data: pd.DataFrame, shop_name: str, bill_no: st
         logging.info(f"发货时间降级: {fallback_count}/{total_records} 行使用了业务时间")
 
     # 分批插入，每 500 条提交一次，避免事务过长导致连接超时
-    BATCH_SIZE = 500
+    BATCH_SIZE = 1000
 
     for i in range(0, total_records, BATCH_SIZE):
         batch = records[i:i+BATCH_SIZE]
@@ -1457,7 +1388,7 @@ def import_other_fee(cursor, data: pd.DataFrame, shop_name: str, bill_no: str = 
     if total_records == 0:
         return
 
-    BATCH_SIZE = 500
+    BATCH_SIZE = 1000
     for i in range(0, total_records, BATCH_SIZE):
         batch = records[i:i + BATCH_SIZE]
         cursor.executemany(insert_sql, batch)
@@ -1517,7 +1448,7 @@ def import_deduction_detail(cursor, data: pd.DataFrame, shop_name: str, bill_no:
     if total_records == 0:
         return
 
-    BATCH_SIZE = 500
+    BATCH_SIZE = 1000
     for i in range(0, total_records, BATCH_SIZE):
         batch = records[i:i + BATCH_SIZE]
         cursor.executemany(insert_sql, batch)
@@ -1591,7 +1522,7 @@ def import_cargo_damage(cursor, data: pd.DataFrame, shop_name: str, bill_no: str
     if total_records == 0:
         return
 
-    BATCH_SIZE = 500
+    BATCH_SIZE = 1000
     for i in range(0, total_records, BATCH_SIZE):
         batch = records[i:i + BATCH_SIZE]
         cursor.executemany(insert_sql, batch)

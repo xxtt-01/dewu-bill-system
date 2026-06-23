@@ -267,3 +267,13 @@
   3. **DB 迁移** — `dw_dzd_xs` 追加 3 列（logistics_sign_time, includes_tag_card_fee, government_subsidy_amount），`dw_dzd_thtk` 追加 2 列
 - **影响范围:** 所有 column mapping 已与最新 Excel 格式对齐
 
+## 2026-06-23 22:30: 性能优化：BATCH_SIZE 调整 + 缓存读取 + 并行下载
+- **文件:** `得物对账单_sqlserver版.py`
+- **原因:** 全流程串行处理导致入库/下载阶段存在 I/O 瓶颈
+- **优化:**
+  1. **BATCH_SIZE 500→1000** — 减少 commit 次数，DB 写入吞吐量翻倍
+  2. **Excel 缓存读取** — `process_import` 一次读取 tiqu 文件全部 sheet，避免每个 sheet 单独读文件（6 次→1 次）
+  3. **重试逻辑去重** — 6 个重复的 while+try/except 块合并为 `_retry_import()` 辅助函数（-60% 重复代码）
+  4. **并行下载** — `download_files` 改用 `ThreadPoolExecutor(max_workers=4)` 并发下载，网络 I/O 不再串行
+- **影响范围:** 无功能变化，仅性能提升
+
