@@ -332,3 +332,14 @@
   1. `.tmp` 清理中 `os.remove` 失败会掩盖原始下载异常，改为嵌套 try/except 忽略清理失败
   2. SQL 迁移补充 `ALTER TABLE dw_dzd_bill_overview ADD ZH` 段，覆盖表已存在但缺 ZH 列的场景
 
+## 2026-06-24: 代码质量修复（第三方审查后）
+- **文件:** `得物对账单_sqlserver版.py`
+- **变更:**
+  1. `extract_bill_period_from_file` → `extract_bill_period_from_data`，从缓存 DataFrame 提取 bill_period，避免二次读文件
+  2. `_prepare` 闭包 → 模块级 `prepare_df` 函数，不再每次重新创建
+  3. `import json` 从函数内部移到文件顶部
+  4. `time.sleep(120)` → `DOWNLOAD_WAIT_SECONDS` 常量
+  5. `max_workers=4/5` → `DOWNLOAD_WORKERS` / `SHOP_WORKERS` 常量
+  6. 删除死代码：`generate_result_file` + 6 个 `_from_file` 函数
+  7. `file_tracking.json` 路径从 RESULT_DIR 移到 `.cache` 目录
+

@@ -1,5 +1,6 @@
 import os
 import logging
+import json
 import pyodbc  # 替换 pymysql 为 pyodbc
 import hashlib
 import time
@@ -53,12 +54,24 @@ GENERATE_API_URL = "https://openapi.dewu.com/dop/api/v1/bill/generate"
 DOWNLOAD_API_URL = "https://openapi.dewu.com/dop/api/v1/bill/export"
 OSS_DOWNLOAD_EXPIRY = 3600
 
+# 并发配置
+DOWNLOAD_WORKERS = 4      # 文件下载并行数
+SHOP_WORKERS = 5          # 店铺处理并行数
+DOWNLOAD_WAIT_SECONDS = 120  # 得物生成文件等待时间
+
 # 空值集合（Excel 中的多种空值表示）
 EMPTY_VALUES = {'', 'NaN', 'nan', 'NAN', 'None', 'none', 'NONE'}
 
 def is_empty(value) -> bool:
     """判断 Excel 单元格值是否为空"""
     return pd.isna(value) or str(value).strip() in EMPTY_VALUES
+
+
+def prepare_df(df: pd.DataFrame) -> pd.DataFrame:
+    """将 header=None 的 DataFrame 提升列名：row 0 → 列名，删除 row 0"""
+    df = df.copy()
+    df.columns = df.iloc[0]
+    return df.iloc[1:].reset_index(drop=True)
 
 
 def detect_headers(df: pd.DataFrame) -> tuple:
@@ -238,7 +251,6 @@ def cleanup_old_logs(days: int = 30):
 
 def check_file_changed(filepath: str, tracking_file: str) -> bool:
     """检查文件是否有变化（基于大小+修改时间）"""
-    import json
     if not os.path.exists(tracking_file):
         return True
     try:
@@ -255,7 +267,6 @@ def check_file_changed(filepath: str, tracking_file: str) -> bool:
 
 def update_file_tracking(filepath: str, tracking_file: str):
     """更新文件追踪记录"""
-    import json
     tracked = {}
     if os.path.exists(tracking_file):
         try:
@@ -565,9 +576,9 @@ def download_files(download_results: Dict[str, dict], shop_name: str, progress_c
                     pass  # 清理失败不掩盖原始异常
             raise
 
-    # 并行下载，最多 4 个并发
+    # 并行下载（DOWNLOAD_WORKERS 个并发）
     futures = {}
-    with ThreadPoolExecutor(max_workers=4) as executor:
+    with ThreadPoolExecutor(max_workers=DOWNLOAD_WORKERS) as executor:
         for bill_no, result in download_results.items():
             futures[executor.submit(download_one, bill_no, result)] = bill_no
 
@@ -584,55 +595,6 @@ def download_files(download_results: Dict[str, dict], shop_name: str, progress_c
                 progress_callback(completed_files, total_files)
 
     logging.info(f"所有文件下载完成！文件保存路径: {shop_dir}")
-
-def generate_result_file(inserted: List[Tuple[int, str]],
-                         download_results: Dict[str, dict],
-                         skipped: Dict[str, str],
-                         shop_name: str,
-                         error: Exception = None) -> str:
-    """生成结果文件"""
-    os.makedirs(RESULT_DIR, exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-    result_file = os.path.join(RESULT_DIR, f"result_{shop_name}_{timestamp}.txt")
-
-    content = [
-        f"店铺名称: {shop_name}",
-        f"执行时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-        f"状态: {'成功' if not error else '失败'}",
-        f"数据库记录数: {len(inserted)}",
-        f"成功下载数: {sum(1 for v in download_results.values() if v.get('success', False))}",
-        f"跳过的账单数: {len(skipped)}",
-        "\n数据库记录详情:"
-    ]
-
-    if inserted:
-        content.extend([f"ID: {rid} \t Bill No: {bno}" for rid, bno in inserted])
-    else:
-        content.append("无新增数据库记录")
-
-    content.append("\n下载结果详情:")
-    for bno, result in download_results.items():
-        content.append(f"Bill No: {bno}")
-        content.append(f"状态: {'成功' if result.get('success', False) else result.get('error', '未知')}")
-        content.append(f"链接: {result.get('url', '')}")
-        content.append("-" * 50)
-
-    content.append("\n跳过的账单详情:")
-    for bno, reason in skipped.items():
-        content.append(f"Bill No: {bno}")
-        content.append(f"原因: {reason}")
-        content.append("-" * 50)
-
-    if error:
-        content.append(f"\n错误详情:\n{str(error)}")
-
-    try:
-        with open(result_file, 'w', encoding='utf-8') as f:
-            f.write('\n'.join(content))
-        return result_file
-    except Exception as e:
-        logging.error(f"结果文件保存失败: {str(e)}")
-        return ""
 
 def diagnose_network(host: str) -> bool:
     """诊断网络连接"""
@@ -674,14 +636,10 @@ def process_import(root, update_log, text_handler=None):
                             xls_cache = pd.read_excel(file_path, sheet_name=None, header=None)
                             sheet_names = set(xls_cache.keys())
 
-                            # 将 header=None 的 DataFrame 提升列名：row 0 → 列名，删除 row 0
-                            def _prepare(df):
-                                df = df.copy()
-                                df.columns = df.iloc[0]
-                                return df.iloc[1:].reset_index(drop=True)
-
-                            # 从账单总览 sheet 提取 bill_period
-                            bill_period = extract_bill_period_from_file(file_path)
+                            # 从缓存提取 bill_period，避免重复读文件
+                            bill_period = ''
+                            if '账单总览' in sheet_names:
+                                bill_period = extract_bill_period_from_data(xls_cache['账单总览'])
 
                             # 通用重试包装：每个 sheet 用缓存数据直接入库
                             def _retry_import(import_func, sheet_name, *args):
@@ -711,11 +669,11 @@ def process_import(root, update_log, text_handler=None):
                                     continue
 
                                 # 5 个多行数据 sheet：提升列名后导入
-                                _retry_import(import_sales_orders, '销售订单', cursor, _prepare(xls_cache['销售订单']), shop_name, bill_no, bill_period)
-                                _retry_import(import_refund_orders, '退货退款订单', cursor, _prepare(xls_cache['退货退款订单']), shop_name, bill_no, bill_period)
-                                _retry_import(import_other_fee, '本期结算其他项费用', cursor, _prepare(xls_cache['本期结算其他项费用']), shop_name, bill_no, bill_period)
-                                _retry_import(import_deduction_detail, '扣减其他费用明细', cursor, _prepare(xls_cache['扣减其他费用明细']), shop_name, bill_no, bill_period)
-                                _retry_import(import_cargo_damage, '本期货损买进订单', cursor, _prepare(xls_cache['本期货损买进订单']), shop_name, bill_no, bill_period)
+                                _retry_import(import_sales_orders, '销售订单', cursor, prepare_df(xls_cache['销售订单']), shop_name, bill_no, bill_period)
+                                _retry_import(import_refund_orders, '退货退款订单', cursor, prepare_df(xls_cache['退货退款订单']), shop_name, bill_no, bill_period)
+                                _retry_import(import_other_fee, '本期结算其他项费用', cursor, prepare_df(xls_cache['本期结算其他项费用']), shop_name, bill_no, bill_period)
+                                _retry_import(import_deduction_detail, '扣减其他费用明细', cursor, prepare_df(xls_cache['扣减其他费用明细']), shop_name, bill_no, bill_period)
+                                _retry_import(import_cargo_damage, '本期货损买进订单', cursor, prepare_df(xls_cache['本期货损买进订单']), shop_name, bill_no, bill_period)
 
                                 # 账单总览：保持 raw 格式，函数内部自己做列名提升
                                 if '账单总览' in sheet_names:
@@ -742,22 +700,6 @@ def process_import(root, update_log, text_handler=None):
     except Exception as e:
         logging.error(f"未预期错误: {str(e)}", exc_info=True)
         update_log(f"处理失败: {str(e)}")
-
-def import_sales_orders_from_file(file_path, shop_name, bill_no='', bill_period=''):
-    """从文件导入销售订单"""
-    data = pd.read_excel(file_path, sheet_name='销售订单')
-    data = data.fillna('').replace(['NaN', 'nan', 'NAN', 'None', 'none', 'NONE'], '')
-
-    with DBConnection() as cursor:
-        import_sales_orders(cursor, data, shop_name, bill_no, bill_period)
-
-def import_refund_orders_from_file(file_path, shop_name, bill_no='', bill_period=''):
-    """从文件导入退货退款订单"""
-    data = pd.read_excel(file_path, sheet_name='退货退款订单')
-    data = data.fillna('').replace(['NaN', 'nan', 'NAN', 'None', 'none', 'NONE'], '')
-
-    with DBConnection() as cursor:
-        import_refund_orders(cursor, data, shop_name, bill_no, bill_period)
 
 def process_import_with_logging(root, update_log, text_handler=None):
     """运行账单入库流程并更新日志"""
@@ -848,8 +790,8 @@ def run_processing(root, update_log):
                 processor = BillProcessor(bill_nos, credential, progress_callback=lambda x, y: update_log(f"进度: {x}/{y}"))
                 processor.process_all()
                 download_results = processor.results
-                update_log(f"[{credential.cred_id}] 等待 120 秒后开始下载...")
-                time.sleep(120)
+                update_log(f"[{credential.cred_id}] 等待 {DOWNLOAD_WAIT_SECONDS} 秒后开始下载...")
+                time.sleep(DOWNLOAD_WAIT_SECONDS)
                 download_files(download_results, credential.cred_id, progress_callback=lambda x, y: update_log(f"下载进度: {x}/{y}"))
                 return {"execution_time": execution_time, "shop_name": credential.cred_id, "status": "成功",
                         "insert_count": len(inserted_records),
@@ -865,9 +807,9 @@ def run_processing(root, update_log):
                         "insert_count": 0, "download_success_count": 0, "skipped_count": 0,
                         "inserted_records": [], "download_results": {}, "skipped_records": {}}
 
-        # 店铺间并行处理，max_workers=5 并行下载店铺数据
+        # 店铺间并行处理，SHOP_WORKERS 个店铺并行
         results = []
-        with ThreadPoolExecutor(max_workers=5) as executor:
+        with ThreadPoolExecutor(max_workers=SHOP_WORKERS) as executor:
             futures = {executor.submit(_process_one_shop, cred): cred for cred in credentials}
             for f in as_completed(futures):
                 results.append(f.result())
@@ -893,7 +835,7 @@ def import_bills(root, update_log):
                            '本期结算其他项费用', '扣减其他费用明细', '本期货损买进订单']
 
         all_files = []
-        tracking_file = os.path.join(RESULT_DIR, 'file_tracking.json')
+        tracking_file = os.path.join(BASE_DIR, '.cache', 'file_tracking.json')
         for shop_folder in os.listdir(DOWNLOAD_DIR):
             shop_path = os.path.join(DOWNLOAD_DIR, shop_folder)
             if os.path.isdir(shop_path):
@@ -991,10 +933,9 @@ def check_if_imported_new(cursor, bill_no: str) -> bool:
     return count > 0
 
 
-def extract_bill_period_from_file(file_path: str) -> str:
-    """从 _tiqu.xlsx 的账单总览 sheet 提取账单起止时间"""
+def extract_bill_period_from_data(overview: pd.DataFrame) -> str:
+    """从账单总览 DataFrame 提取账单起止时间"""
     try:
-        overview = pd.read_excel(file_path, sheet_name='账单总览', header=None)
         note_rows, header_rows, first_data = detect_headers(overview)
 
         if not header_rows or len(overview) <= first_data:
@@ -1405,18 +1346,8 @@ def import_bill_overview(cursor, data: pd.DataFrame, shop_name: str):
     logging.info(f"账单总览 {bill_no} 入库成功")
 
 
-def import_bill_overview_from_file(file_path: str, shop_name: str):
-    """从 _tiqu.xlsx 的账单总览 sheet 读取并入库"""
-    data = pd.read_excel(file_path, sheet_name='账单总览', header=None)
-    data = data.fillna('').replace(['NaN', 'nan', 'NAN', 'None', 'none', 'NONE'], '')
-
-    with DBConnection() as cursor:
-        import_bill_overview(cursor, data, shop_name)
-
-
 # ============================================================
 # 本期结算其他项费用 field_mapping → dw_dzd_other_fee
-# 2行表头（说明行+列名行），使用简单列名
 # ============================================================
 OTHER_FEE_FIELD_MAPPING = {
     '费用类型': 'fee_type',
@@ -1481,15 +1412,6 @@ def import_other_fee(cursor, data: pd.DataFrame, shop_name: str, bill_no: str = 
             logging.info(f"已插入 {processed}/{total_records} 条其他项费用记录")
 
 
-def import_other_fee_from_file(file_path: str, shop_name: str, bill_no: str = '', bill_period: str = ''):
-    """从 _tiqu.xlsx 的 本期结算其他项费用 sheet 读取并入库"""
-    data = pd.read_excel(file_path, sheet_name='本期结算其他项费用')
-    data = data.fillna('').replace(['NaN', 'nan', 'NAN', 'None', 'none', 'NONE'], '')
-
-    with DBConnection() as cursor:
-        import_other_fee(cursor, data, shop_name, bill_no, bill_period)
-
-
 # ============================================================
 # 扣减其他费用明细 field_mapping → dw_dzd_deduction_detail
 # ============================================================
@@ -1539,15 +1461,6 @@ def import_deduction_detail(cursor, data: pd.DataFrame, shop_name: str, bill_no:
         processed = min(i + BATCH_SIZE, total_records)
         if processed % 1000 == 0 or processed == total_records:
             logging.info(f"已插入 {processed}/{total_records} 条扣减明细记录")
-
-
-def import_deduction_detail_from_file(file_path: str, shop_name: str, bill_no: str = '', bill_period: str = ''):
-    """从 _tiqu.xlsx 的 扣减其他费用明细 sheet 读取并入库"""
-    data = pd.read_excel(file_path, sheet_name='扣减其他费用明细')
-    data = data.fillna('').replace(['NaN', 'nan', 'NAN', 'None', 'none', 'NONE'], '')
-
-    with DBConnection() as cursor:
-        import_deduction_detail(cursor, data, shop_name, bill_no, bill_period)
 
 
 # ============================================================
@@ -1613,16 +1526,6 @@ def import_cargo_damage(cursor, data: pd.DataFrame, shop_name: str, bill_no: str
         processed = min(i + BATCH_SIZE, total_records)
         if processed % 1000 == 0 or processed == total_records:
             logging.info(f"已插入 {processed}/{total_records} 条货损买进记录")
-
-
-def import_cargo_damage_from_file(file_path: str, shop_name: str, bill_no: str = '', bill_period: str = ''):
-    """从 _tiqu.xlsx 的 本期货损买进订单 sheet 读取并入库"""
-    data = pd.read_excel(file_path, sheet_name='本期货损买进订单')
-    data = data.fillna('').replace(['NaN', 'nan', 'NAN', 'None', 'none', 'NONE'], '')
-
-    with DBConnection() as cursor:
-        import_cargo_damage(cursor, data, shop_name, bill_no, bill_period)
-
 
 
 def record_import_new(cursor, bill_no: str, shop_name: str):
