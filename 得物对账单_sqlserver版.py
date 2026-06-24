@@ -649,7 +649,7 @@ def process_import(root, update_log, text_handler=None):
             shop_path = os.path.join(EXTRACT_DIR, shop_folder)
             if os.path.isdir(shop_path):
                 for file in os.listdir(shop_path):
-                    if file.endswith('.xlsx'):
+                    if file.endswith('.xlsx') and not file.startswith('~$'):
                         file_path = os.path.join(shop_path, file)
                         logging.info(f"开始处理文件: {file_path}")
                         update_log(f"正在处理: {file_path}")
@@ -888,7 +888,7 @@ def import_bills(root, update_log):
             shop_path = os.path.join(DOWNLOAD_DIR, shop_folder)
             if os.path.isdir(shop_path):
                 for file in os.listdir(shop_path):
-                    if file.endswith('.xlsx') and not file.endswith('_tiqu.xlsx'):
+                    if file.endswith('.xlsx') and not file.endswith('_tiqu.xlsx') and not file.startswith('~$'):
                         src_path = os.path.join(shop_path, file)
                         dest_dir = os.path.join(EXTRACT_DIR, shop_folder)
                         dest_path = os.path.join(dest_dir, file.replace('.xlsx', '_tiqu.xlsx'))
