@@ -6,7 +6,7 @@ import hashlib
 import time
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QProgressBar,
     QVBoxLayout, QHBoxLayout, QPlainTextEdit, QPushButton, QLabel, QMessageBox, QTimeEdit)
-from PyQt6.QtCore import pyqtSignal, Qt, QTimer
+from PyQt6.QtCore import pyqtSignal, Qt, QTime
 from PyQt6.QtGui import QFont
 from urllib.parse import quote_plus
 import requests
@@ -1597,6 +1597,10 @@ class MainWindow(QMainWindow):
 
         cleanup_old_logs(30)
 
+        # 任务防重
+        self._running_tasks = set()
+        self._task_lock = threading.Lock()
+
         # 颜色方案
         self.C_BG = "#303438"
         self.C_FG = "#eef5fb"
@@ -1697,13 +1701,13 @@ class MainWindow(QMainWindow):
         """
 
         buttons = [
-            ("下载账单", lambda: self._run_thread(
+            ("下载账单", lambda: self._run_task("下载账单",
                 lambda: run_processing_with_logging(self, self._update_log))),
-            ("账单处理", lambda: self._run_thread(
+            ("账单处理", lambda: self._run_task("账单处理",
                 lambda: import_bills_with_logging(self, self._update_log))),
-            ("账单入库", lambda: self._run_thread(
+            ("账单入库", lambda: self._run_task("账单入库",
                 lambda: process_import_with_logging(self, self._update_log, self.log_handler))),
-            ("测试连接", lambda: self._run_thread(
+            ("测试连接", lambda: self._run_task("测试连接",
                 lambda: test_db_connection_gui(self._update_log))),
         ]
 
@@ -1727,7 +1731,7 @@ class MainWindow(QMainWindow):
 
         self.schedule_time = QTimeEdit()
         self.schedule_time.setDisplayFormat("HH:mm")
-        self.schedule_time.setTime(self.schedule_time.time().fromString("02:00", "HH:mm"))
+        self.schedule_time.setTime(QTime(2, 0))
         self.schedule_time.setStyleSheet(f"""
             QTimeEdit {{
                 background-color: {self.C_CARD};
@@ -1768,7 +1772,7 @@ class MainWindow(QMainWindow):
         status_layout = QHBoxLayout()
         status_layout.setSpacing(4)
 
-        self.countdown_label = QLabel("10")
+        self.countdown_label = QLabel("0")
         self.countdown_label.setFont(QFont("Consolas", 28))
         self.countdown_label.setStyleSheet(f"color: {self.C_ACCENT}; background: transparent;")
         status_layout.addWidget(self.countdown_label)
@@ -1824,7 +1828,6 @@ class MainWindow(QMainWindow):
         """自动运行控制"""
         class AutoRun:
             def __init__(self, window):
-                import threading
                 self._window = window
                 self._lock = threading.Lock()
                 self._paused = False
@@ -1872,10 +1875,37 @@ class MainWindow(QMainWindow):
         """从工作线程调用的日志更新（线程安全）"""
         self.log_signal.emit(message)
 
-    def _run_thread(self, func):
-        """在后台线程中运行任务"""
-        thread = threading.Thread(target=func, daemon=True)
-        thread.start()
+    def _run_task(self, task_id, task_func):
+        """启动后台任务，同一 ID 的任务不可重复运行"""
+        with self._task_lock:
+            if task_id in self._running_tasks:
+                self._update_log(f"【{task_id}】正在运行中，请等待完成")
+                return
+            self._running_tasks.add(task_id)
+
+        def wrapper():
+            try:
+                task_func()
+            except Exception as e:
+                logging.error(f"【{task_id}】运行异常: {str(e)}", exc_info=True)
+            finally:
+                with self._task_lock:
+                    self._running_tasks.discard(task_id)
+
+        threading.Thread(target=wrapper, daemon=True).start()
+
+    def _safe_run_phase(self, task_id, task_func):
+        """在调度循环中安全执行一个阶段，若任务已被手动触发则跳过"""
+        with self._task_lock:
+            if task_id in self._running_tasks:
+                self._update_log(f"【{task_id}】已被手动执行，调度跳过此阶段")
+                return
+            self._running_tasks.add(task_id)
+        try:
+            task_func()
+        finally:
+            with self._task_lock:
+                self._running_tasks.discard(task_id)
 
     def _get_next_run_seconds(self) -> int:
         """计算距下次定时执行还有多少秒"""
@@ -1890,10 +1920,13 @@ class MainWindow(QMainWindow):
 
     def _start_schedule(self):
         """用户点击"启动自动运行"时触发"""
-        if self.auto_run.running and not self.auto_run.paused:
+        if self.auto_run.paused:
+            self.auto_run.paused = False
+            self._update_log("自动运行已恢复")
+            return
+        if self.auto_run.running:
             self._update_log("自动运行已启动，请勿重复点击")
             return
-        self.auto_run.paused = False
         self.auto_run.running = True
         self._update_log(f"定时任务已启动，每天 {self.schedule_time.text()} 执行")
         threading.Thread(target=self._run_schedule_loop, daemon=True).start()
@@ -1920,15 +1953,15 @@ class MainWindow(QMainWindow):
 
                 logging.info("=== 开始自动运行序列 ===")
                 self._update_log("=== 开始自动运行序列 ===")
-                run_processing_with_logging(self, self._update_log)
+                self._safe_run_phase("下载账单", lambda: run_processing_with_logging(self, self._update_log))
                 if self.auto_run.paused: break
                 self._update_log("下载账单流程完成，等待 15 秒...")
                 if not self._sleep_cancellable(15): break
-                import_bills_with_logging(self, self._update_log)
+                self._safe_run_phase("账单处理", lambda: import_bills_with_logging(self, self._update_log))
                 if self.auto_run.paused: break
                 self._update_log("账单处理流程完成，等待 15 秒...")
                 if not self._sleep_cancellable(15): break
-                process_import_with_logging(self, self._update_log, self.log_handler)
+                self._safe_run_phase("账单入库", lambda: process_import_with_logging(self, self._update_log, self.log_handler))
                 if self.auto_run.paused: break
                 self._update_log(f"本轮执行完成，等待到 {self.schedule_time.text()} 执行下一轮...")
             except Exception as e:
@@ -1937,6 +1970,7 @@ class MainWindow(QMainWindow):
                 if not self._sleep_cancellable(60): break
         self.auto_run.running = False
         self._update_log("自动运行已停止")
+
     def closeEvent(self, event):
         """窗口关闭事件"""
         reply = QMessageBox.question(self, "\u9000\u51fa",

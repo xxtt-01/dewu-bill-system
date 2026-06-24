@@ -353,3 +353,13 @@
   5. 新增 `_run_schedule_loop` 替换原 `_run_auto_sequence`，执行后等待到次日同一时间
   6. 移除 6 小时硬编码循环间隔
 
+## 2026-06-24: 线程安全优化—任务防重复 + 调度与手动互斥
+- **文件:** `得物对账单_sqlserver版.py`
+- **变更:**
+  1. 新增 `_run_task` 替代 `_run_thread`，用 `_running_tasks` 集合 + `_task_lock` 防止同一按钮重复点击
+  2. 新增 `_safe_run_phase`，调度循环中的阶段若已被手动触发则跳过，避免调度与手动任务冲突
+  3. 按钮（下载账单/账单处理/账单入库/测试连接）全部改用 `_run_task`
+  4. 调度循环的 3 个阶段全部改用 `_safe_run_phase`
+  5. 移除 AutoRun 内冗余的 `import threading`
+  6. 补齐 `closeEvent` 前缺失的空行
+
