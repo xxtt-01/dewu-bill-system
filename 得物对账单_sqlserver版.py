@@ -5,7 +5,7 @@ import pyodbc  # 替换 pymysql 为 pyodbc
 import hashlib
 import time
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QProgressBar,
-    QVBoxLayout, QHBoxLayout, QPlainTextEdit, QPushButton, QLabel, QMessageBox)
+    QVBoxLayout, QHBoxLayout, QPlainTextEdit, QPushButton, QLabel, QMessageBox, QTimeEdit)
 from PyQt6.QtCore import pyqtSignal, Qt, QTimer
 from PyQt6.QtGui import QFont
 from urllib.parse import quote_plus
@@ -1618,9 +1618,6 @@ class MainWindow(QMainWindow):
         self._setup_ui()
         self._setup_auto_run()
 
-        # 启动倒计时
-        QTimer.singleShot(0, self._start_countdown)
-
     def _setup_ui(self):
         """构建界面"""
         central = QWidget()
@@ -1718,6 +1715,54 @@ class MainWindow(QMainWindow):
             btn_layout.addWidget(btn)
 
         root_layout.addLayout(btn_layout)
+
+        # ── 定时设置行 ──
+        sched_layout = QHBoxLayout()
+        sched_layout.setSpacing(8)
+
+        sched_label = QLabel("每天执行时间：")
+        sched_label.setFont(QFont("Consolas", 11))
+        sched_label.setStyleSheet(f"color: {self.C_FG_SEC}; background: transparent;")
+        sched_layout.addWidget(sched_label)
+
+        self.schedule_time = QTimeEdit()
+        self.schedule_time.setDisplayFormat("HH:mm")
+        self.schedule_time.setTime(self.schedule_time.time().fromString("02:00", "HH:mm"))
+        self.schedule_time.setStyleSheet(f"""
+            QTimeEdit {{
+                background-color: {self.C_CARD};
+                color: {self.C_FG};
+                font-family: Consolas;
+                font-size: 13px;
+                padding: 6px 10px;
+                border: 1px solid {self.C_BORDER};
+                border-radius: 6px;
+            }}
+        """)
+        sched_layout.addWidget(self.schedule_time)
+
+        start_btn = QPushButton("启动自动运行")
+        start_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {self.C_SUCCESS};
+                color: #1c1c24;
+                font-family: Consolas;
+                font-size: 12px;
+                font-weight: bold;
+                padding: 8px 18px;
+                border: none;
+                border-radius: 6px;
+            }}
+            QPushButton:hover {{
+                background-color: #3db869;
+            }}
+        """)
+        start_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        start_btn.clicked.connect(self._start_schedule)
+        sched_layout.addWidget(start_btn)
+
+        sched_layout.addStretch(1)
+        root_layout.addLayout(sched_layout)
 
         # ── 状态行 ──
         status_layout = QHBoxLayout()
@@ -1832,24 +1877,26 @@ class MainWindow(QMainWindow):
         thread = threading.Thread(target=func, daemon=True)
         thread.start()
 
-    def _start_countdown(self):
-        """启动倒计时和自动运行"""
-        def run():
-            if self.auto_run.paused or self.auto_run.running:
-                return
-            self.auto_run.running = True
-            countdown = 10
-            self.countdown_signal.emit(countdown)
-            for i in range(countdown, 0, -1):
-                if self.auto_run.paused:
-                    self.auto_run.running = False
-                    return
-                self.countdown_signal.emit(i)
-                time.sleep(1)
-            self.countdown_signal.emit(0)
-            self.auto_run.paused = False
-            self._run_auto_sequence()
-        threading.Thread(target=run, daemon=True).start()
+    def _get_next_run_seconds(self) -> int:
+        """计算距下次定时执行还有多少秒"""
+        now = datetime.now()
+        qt = self.schedule_time.time()
+        target_today = now.replace(hour=qt.hour(), minute=qt.minute(), second=0, microsecond=0)
+        if target_today > now:
+            return int((target_today - now).total_seconds())
+        else:
+            target_tomorrow = target_today + timedelta(days=1)
+            return int((target_tomorrow - now).total_seconds()) + 1
+
+    def _start_schedule(self):
+        """用户点击"启动自动运行"时触发"""
+        if self.auto_run.running and not self.auto_run.paused:
+            self._update_log("自动运行已启动，请勿重复点击")
+            return
+        self.auto_run.paused = False
+        self.auto_run.running = True
+        self._update_log(f"定时任务已启动，每天 {self.schedule_time.text()} 执行")
+        threading.Thread(target=self._run_schedule_loop, daemon=True).start()
 
     def _sleep_cancellable(self, seconds):
         for _ in range(seconds):
@@ -1858,31 +1905,38 @@ class MainWindow(QMainWindow):
             time.sleep(1)
         return True
 
-    def _run_auto_sequence(self):
+    def _run_schedule_loop(self):
+        """定时循环：等待到执行时间 → 3 阶段 → 等待到次日"""
         while not self.auto_run.paused:
             try:
-                logging.info("=== \u5f00\u59cb\u81ea\u52a8\u8fd0\u884c\u5e8f\u5217 ===")
-                self._update_log("=== \u5f00\u59cb\u81ea\u52a8\u8fd0\u884c\u5e8f\u5217 ===")
+                wait_seconds = self._get_next_run_seconds()
+                hours = wait_seconds // 3600
+                mins = (wait_seconds % 3600) // 60
+                self._update_log(f"距下次执行还有 {hours} 小时 {mins} 分（{self.schedule_time.text()}）")
+                self.countdown_signal.emit(int(wait_seconds))
+                if not self._sleep_cancellable(wait_seconds):
+                    break
+                self.countdown_signal.emit(0)
+
+                logging.info("=== 开始自动运行序列 ===")
+                self._update_log("=== 开始自动运行序列 ===")
                 run_processing_with_logging(self, self._update_log)
                 if self.auto_run.paused: break
-                self._update_log("\u4e0b\u8f7d\u8d26\u5355\u6d41\u7a0b\u5b8c\u6210\uff0c\u7b49\u5f8515\u79d2...")
+                self._update_log("下载账单流程完成，等待 15 秒...")
                 if not self._sleep_cancellable(15): break
                 import_bills_with_logging(self, self._update_log)
                 if self.auto_run.paused: break
-                self._update_log("\u8d26\u5355\u5904\u7406\u6d41\u7a0b\u5b8c\u6210\uff0c\u7b49\u5f8515\u79d2...")
+                self._update_log("账单处理流程完成，等待 15 秒...")
                 if not self._sleep_cancellable(15): break
                 process_import_with_logging(self, self._update_log, self.log_handler)
                 if self.auto_run.paused: break
-                self._update_log("\u8d26\u5355\u5165\u5e93\u6d41\u7a0b\u5b8c\u6210\uff0c\u7b49\u5f8521600\u79d2\u540e\u91cd\u65b0\u5f00\u59cb\u5faa\u73af...")
-                if not self._sleep_cancellable(21600): break
+                self._update_log(f"本轮执行完成，等待到 {self.schedule_time.text()} 执行下一轮...")
             except Exception as e:
-                logging.error(f"\u81ea\u52a8\u8fd0\u884c\u5e8f\u5217\u5f02\u5e38: {str(e)}", exc_info=True)
-                self._update_log(f"\u81ea\u52a8\u8fd0\u884c\u5e8f\u5217\u5f02\u5e38: {str(e)}"
-                                 f"\uff0c60\u79d2\u540e\u91cd\u8bd5...")
+                logging.error(f"自动运行序列异常: {str(e)}", exc_info=True)
+                self._update_log(f"自动运行序列异常: {str(e)}，60 秒后重试...")
                 if not self._sleep_cancellable(60): break
         self.auto_run.running = False
-        logging.info("\u81ea\u52a8\u8fd0\u884c\u5df2\u505c\u6b62")
-
+        self._update_log("自动运行已停止")
     def closeEvent(self, event):
         """窗口关闭事件"""
         reply = QMessageBox.question(self, "\u9000\u51fa",

@@ -343,3 +343,13 @@
   6. 删除死代码：`generate_result_file` + 6 个 `_from_file` 函数
   7. `file_tracking.json` 路径从 RESULT_DIR 移到 `.cache` 目录
 
+## 2026-06-24: 改造为每天定时自动运行
+- **文件:** `得物对账单_sqlserver版.py`
+- **变更:**
+  1. 删除自动启动：不再一打开就 10 秒倒计时启动，改为等待用户操作
+  2. 新增 `QTimeEdit` 时间选择器（默认 02:00），用户可设置每天执行时间
+  3. 新增"启动自动运行"按钮，用户手动触发定时任务
+  4. 新增 `_get_next_run_seconds` 计算距下次执行时间
+  5. 新增 `_run_schedule_loop` 替换原 `_run_auto_sequence`，执行后等待到次日同一时间
+  6. 移除 6 小时硬编码循环间隔
+
