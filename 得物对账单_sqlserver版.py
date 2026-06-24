@@ -559,7 +559,10 @@ def download_files(download_results: Dict[str, dict], shop_name: str, progress_c
             return f"成功"
         except Exception as e:
             if os.path.exists(tmppath):
-                os.remove(tmppath)
+                try:
+                    os.remove(tmppath)
+                except OSError:
+                    pass  # 清理失败不掩盖原始异常
             raise
 
     # 并行下载，最多 4 个并发

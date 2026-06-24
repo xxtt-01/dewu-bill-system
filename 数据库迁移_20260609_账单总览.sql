@@ -41,6 +41,15 @@ BEGIN
 END
 GO
 
+-- 针对已存在 dw_dzd_bill_overview 表但缺少 ZH 列的数据库做补充
+IF EXISTS (SELECT * FROM sys.tables WHERE name = 'dw_dzd_bill_overview')
+   AND NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('dw_dzd_bill_overview') AND name = 'ZH')
+BEGIN
+    ALTER TABLE dw_dzd_bill_overview ADD ZH VARCHAR(100);
+    EXEC sp_addextendedproperty 'MS_Description', '店铺名称', 'SCHEMA', 'dbo', 'TABLE', 'dw_dzd_bill_overview', 'COLUMN', 'ZH';
+END
+GO
+
 -- ============================================================
 -- 2. 表中文注释
 -- ============================================================

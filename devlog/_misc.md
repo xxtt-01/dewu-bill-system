@@ -326,3 +326,9 @@
   3. **`.tmp` 文件残留** — `download_files` 中下载失败时清理残留的 `.tmp` 文件
   4. **死代码** — 删除 `import_bills` 中未使用的 `shop_name` 变量
 
+## 2026-06-24: OCR 代码审查修复
+- **文件:** `得物对账单_sqlserver版.py`, `数据库迁移_20260609_账单总览.sql`
+- **变更:**
+  1. `.tmp` 清理中 `os.remove` 失败会掩盖原始下载异常，改为嵌套 try/except 忽略清理失败
+  2. SQL 迁移补充 `ALTER TABLE dw_dzd_bill_overview ADD ZH` 段，覆盖表已存在但缺 ZH 列的场景
+
