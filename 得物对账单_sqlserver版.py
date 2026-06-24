@@ -345,7 +345,9 @@ def fetch_api_data(params: dict, credential: AppCredential) -> dict:
             total_count = data.get("totalCount", data.get("total_count", data.get("total", 0)))
 
         # 判断是否还有更多页
-        if not page_items or len(all_items) >= total_count:
+        if not page_items:
+            break
+        if total_count > 0 and len(all_items) >= total_count:
             break
         page += 1
         if page > max_pages:
@@ -545,15 +547,20 @@ def download_files(download_results: Dict[str, dict], shop_name: str, progress_c
         filepath = os.path.join(shop_dir, filename)
         tmppath = filepath + '.tmp'
 
-        response = requests.get(url, stream=True, timeout=60)
-        response.raise_for_status()
+        try:
+            response = requests.get(url, stream=True, timeout=60)
+            response.raise_for_status()
 
-        with open(tmppath, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                f.write(chunk)
+            with open(tmppath, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    f.write(chunk)
 
-        os.replace(tmppath, filepath)
-        return f"成功"
+            os.replace(tmppath, filepath)
+            return f"成功"
+        except Exception as e:
+            if os.path.exists(tmppath):
+                os.remove(tmppath)
+            raise
 
     # 并行下载，最多 4 个并发
     futures = {}
@@ -948,8 +955,6 @@ def import_bills(root, update_log):
                     if workbook.worksheets:
                         workbook.worksheets[0].sheet_state = 'visible'
                         workbook.active = 0
-
-                shop_name = os.path.basename(os.path.dirname(src_path))
 
                 logging.info(f"文件处理完成: {src_path} -> {dest_path}")
                 update_log(f"文件处理完成: {src_path} -> {dest_path}")
@@ -1672,6 +1677,7 @@ class MainWindow(QMainWindow):
     """得物对账单控制系统 - 主窗口（深色玻璃拟态风格）"""
     log_signal = pyqtSignal(str)
     countdown_signal = pyqtSignal(int)
+    status_signal = pyqtSignal(str, str)
 
     def __init__(self):
         super().__init__()
@@ -1698,6 +1704,7 @@ class MainWindow(QMainWindow):
         # 信号连接（线程安全）
         self.log_signal.connect(self._append_log)
         self.countdown_signal.connect(lambda v: self.countdown_label.setText(str(v)))
+        self.status_signal.connect(self._update_status_label)
 
         # 日志处理器（传递给业务函数）
         self.log_handler = QtLogHandler(self.log_signal)
@@ -1882,11 +1889,9 @@ class MainWindow(QMainWindow):
                 with self._lock:
                     self._paused = value
                 if value:
-                    self._window.status_label.setText("\u25cf \u5df2\u6682\u505c")
-                    self._window.status_label.setStyleSheet(f"color: {self._window.C_DANGER}; background: transparent;")
+                    self._window.status_signal.emit("\u25cf \u5df2\u6682\u505c", self._window.C_DANGER)
                 else:
-                    self._window.status_label.setText("\u25cf \u8fd0\u884c\u4e2d")
-                    self._window.status_label.setStyleSheet(f"color: {self._window.C_SUCCESS}; background: transparent;")
+                    self._window.status_signal.emit("\u25cf \u8fd0\u884c\u4e2d", self._window.C_SUCCESS)
 
             @property
             def running(self):
@@ -1897,15 +1902,20 @@ class MainWindow(QMainWindow):
             def running(self, value):
                 with self._lock:
                     self._running = value
-                if not value and not self._paused:
-                    self._window.status_label.setText("\u25cf \u7a7a\u95f2")
-                    self._window.status_label.setStyleSheet(f"color: {self._window.C_FG_SEC}; background: transparent;")
+                    paused = self._paused
+                if not value and not paused:
+                    self._window.status_signal.emit("\u25cf \u7a7a\u95f2", self._window.C_FG_SEC)
 
         self.auto_run = AutoRun(self)
 
     def _append_log(self, message):
         """主线程中更新日志（由信号触发）"""
         self.log_text.appendPlainText(message)
+
+    def _update_status_label(self, text, color):
+        """主线程中更新状态标签（由信号触发）"""
+        self.status_label.setText(text)
+        self.status_label.setStyleSheet(f"color: {color}; background: transparent;")
 
     def _update_log(self, message):
         """从工作线程调用的日志更新（线程安全）"""

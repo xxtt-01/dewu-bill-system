@@ -318,3 +318,11 @@
 - **效果:** 后缀文件（如 `HD12345_1_tiqu.xlsx`）的 bill_no 正确提取为 `HD12345_1`，与 base 文件 `HD12345` 区分开，各自独立入库
 - **影响范围:** 仅影响提取 bill_no 的逻辑，无其他影响
 
+## 2026-06-24: 修复 3 个代码质量问题
+- **文件:** `得物对账单_sqlserver版.py`
+- **变更:**
+  1. **分页终止条件** — `fetch_api_data` 中 `total_count=0` 时会导致首次有数据就退出分页循环，改为 `total_count>0` 时才判断是否已拉满
+  2. **GUI 线程安全** — AutoRun 的 `paused`/`running` setter 直接操作 Qt 控件（背景线程中调用），改为通过 `pyqtSignal` 代理到主线程
+  3. **`.tmp` 文件残留** — `download_files` 中下载失败时清理残留的 `.tmp` 文件
+  4. **死代码** — 删除 `import_bills` 中未使用的 `shop_name` 变量
+
