@@ -35,6 +35,7 @@ BEGIN
         price_reduction_subsidy DECIMAL(18,2),
         total_payable_amount DECIMAL(18,2),
         settlement_status VARCHAR(50),
+        ZH VARCHAR(100),
         create_time DATETIME DEFAULT GETDATE()
     );
 END
@@ -120,6 +121,9 @@ IF NOT EXISTS (SELECT * FROM fn_listextendedproperty('MS_Description', 'SCHEMA',
 -- 结算状态
 IF NOT EXISTS (SELECT * FROM fn_listextendedproperty('MS_Description', 'SCHEMA', 'dbo', 'TABLE', 'dw_dzd_bill_overview', 'COLUMN', 'settlement_status'))
     EXEC sp_addextendedproperty 'MS_Description', '结算状态', 'SCHEMA', 'dbo', 'TABLE', 'dw_dzd_bill_overview', 'COLUMN', 'settlement_status';
+-- 店铺名称
+IF NOT EXISTS (SELECT * FROM fn_listextendedproperty('MS_Description', 'SCHEMA', 'dbo', 'TABLE', 'dw_dzd_bill_overview', 'COLUMN', 'ZH'))
+    EXEC sp_addextendedproperty 'MS_Description', '店铺名称', 'SCHEMA', 'dbo', 'TABLE', 'dw_dzd_bill_overview', 'COLUMN', 'ZH';
 GO
 
 -- ============================================================
