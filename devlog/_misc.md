@@ -307,3 +307,12 @@
 - **变更:** 在 `_process_one_shop` 中，对 `skipped_bill_nos`（已记录的 bill_no）逐一检查 `download/<shop>/<bill_no>.xlsx` 文件是否存在；若不存在，重新加入下载列表走 generate → export → download 流程
 - **影响范围:** 下载失败的账单会在下次 AutoRun 自动补下，无需手动干预
 
+## 2026-06-24: 修复 bill_no 提取方式，支持同名后缀文件入库
+- **文件:** `得物对账单_sqlserver版.py`
+- **原因:** `process_import` 中 `filename.split('_')[0]` 提取 bill_no 有 2 个问题：
+  1. 文件名无 `_` 时（如 "20260330-...-1207033691884621_tiqu.xlsx"），返回整个字符串包含 `.xlsx`
+  2. 文件名有 `_` 时（如 "HD12345_1_tiqu.xlsx"），只取 `_` 前部分（"HD12345"），导致后缀文件与 base 文件 bill_no 相同，后者被去重跳过
+- **变更:** `split('_')[0]` → `replace('_tiqu.xlsx', '')`
+- **效果:** 后缀文件（如 `HD12345_1_tiqu.xlsx`）的 bill_no 正确提取为 `HD12345_1`，与 base 文件 `HD12345` 区分开，各自独立入库
+- **影响范围:** 仅影响提取 bill_no 的逻辑，无其他影响
+

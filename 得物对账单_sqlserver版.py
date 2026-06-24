@@ -656,7 +656,7 @@ def process_import(root, update_log, text_handler=None):
 
                         try:
                             filename = os.path.basename(file)
-                            bill_no = filename.split('_')[0]
+                            bill_no = filename.replace('_tiqu.xlsx', '')
                             shop_name = shop_folder
 
                             imported = False
