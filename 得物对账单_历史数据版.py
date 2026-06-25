@@ -18,7 +18,6 @@ import sys
 import threading
 import pandas as pd
 import openpyxl
-from openpyxl.workbook.views import BookView
 from dotenv import load_dotenv
 
 # 加载 .env 文件（敏感配置优先从环境变量读取）
@@ -507,7 +506,7 @@ class BillProcessor:
         self.total_bills = len(bill_nos)
         self.completed_bills = 0
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=10))
+    @retry(stop=stop_after_attempt(7), wait=wait_exponential(min=2, max=30))
     def _generate_bill(self, bill_no: str) -> str:
         """调用生成API"""
         params = {
@@ -529,7 +528,7 @@ class BillProcessor:
             logging.error(f"生成账单失败 [{self.credential.cred_id}]: {str(e)}")
             raise
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=10))
+    @retry(stop=stop_after_attempt(7), wait=wait_exponential(min=2, max=30))
     def _get_download_url(self, file_key: str) -> str:
         """获取下载链接"""
         params = {
