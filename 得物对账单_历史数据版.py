@@ -179,26 +179,26 @@ def setup_logging(text_handler) -> str:
 
         log_file = os.path.join(LOG_DIR, f"dwd_bill_etl_{datetime.now().strftime('%Y%m%d%H%M%S')}.log")
 
-    os.makedirs(os.path.dirname(log_file), exist_ok=True)
+        os.makedirs(os.path.dirname(log_file), exist_ok=True)
 
-    logger = logging.getLogger()
-    logger.setLevel(logging.INFO)
+        logger = logging.getLogger()
+        logger.setLevel(logging.INFO)
 
-    # 移除所有现有的处理器
-    for handler in logger.handlers[:]:
-        logger.removeHandler(handler)
+        # 移除所有现有的处理器
+        for handler in logger.handlers[:]:
+            logger.removeHandler(handler)
 
-    # 添加文件处理器
-    file_handler = logging.FileHandler(log_file, encoding='utf-8')
-    file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-    logger.addHandler(file_handler)
+        # 添加文件处理器
+        file_handler = logging.FileHandler(log_file, encoding='utf-8')
+        file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+        logger.addHandler(file_handler)
 
-    # 添加文本控件处理器
-    if text_handler:
-        logger.addHandler(text_handler)
+        # 添加文本控件处理器
+        if text_handler:
+            logger.addHandler(text_handler)
 
-    _logging_initialized = True
-    logging.info("日志系统初始化完成")
+        _logging_initialized = True
+        logging.info("日志系统初始化完成")
     return log_file
 
 class DBConnection:
@@ -932,6 +932,7 @@ def run_processing(root, update_log, start_date=None, end_date=None):
         exit_code = 1
         logging.error(f"未预期错误: {str(e)}", exc_info=True)
         update_log(f"未预期错误: {str(e)}")
+        update_log("账单处理流程结束")
     return exit_code
 
 def import_bills(root, update_log, start_date=None, end_date=None):
