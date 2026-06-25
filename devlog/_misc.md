@@ -485,4 +485,5 @@
   1. `setup_logging` 加 `_logging_lock` 双重检查锁，防止未来多线程竞态
   2. `handlers[0]` 判空防御性写法优化
   3. 标准版 `record_import_new` 失败日志加 `tab=shop_name`，与历史版对齐到店铺标签页
+  4. 两版 `process_import` 中 `_worker` 的入库失败日志加 `tab=sf`，对齐到店铺标签页
 
