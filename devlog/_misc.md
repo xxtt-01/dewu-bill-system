@@ -25,6 +25,15 @@
   3. **M1**: `total_count` 用 `int()` 包裹，防止 API 返回字符串导致 `TypeError`
   4. **M2**: 签名原文和请求 URL 日志从 `logging.info` 降为 `logging.debug`，避免日志膨胀
 
+## 2026-06-25: 时间窗口重叠修复—防止跨边界周账单遗漏
+- **文件:** `得物对账单_历史数据版.py`
+- **原因:** 周账单可能跨窗口边界（如 01-27~02-02），原 logic 首尾相接（01-01~01-31、01-31~03-02），导致跨边界账单在两个窗口都不被 API 包含，遗漏数据
+- **决策:** 
+  1. 新增 `WINDOW_OVERLAP_DAYS = 6` 常量
+  2. `generate_date_windows` 相邻窗口重叠 6 天（覆盖周账单最大跨度）
+  3. 添加 `if window_end == end_date: break` 防止末窗死循环
+- **效果:** 2025-01-01~2026-06-25 从 18 窗变为 23 窗，完全消除遗漏缝隙
+
 
 - **变更:**
   1. `pyodbc.connect(conn_str)` → `pyodbc.connect(conn_str, fast_executemany=True)` — 批量发送，100 万行入库从 15~30 分钟降至 1~3 分钟

@@ -62,7 +62,8 @@ DOWNLOAD_WAIT_SECONDS = 120  # 得物生成文件等待时间
 EMPTY_VALUES = {'', 'NaN', 'nan', 'NAN', 'None', 'none', 'NONE'}
 
 # 日期窗口配置
-WINDOW_DAYS = 30  # 得物 API 单次查询最大天数间隔
+WINDOW_DAYS = 30          # 得物 API 单次查询最大天数间隔
+WINDOW_OVERLAP_DAYS = 6   # 窗口间重叠天数，防止跨边界周账单遗漏
 
 def is_empty(value) -> bool:
     """判断 Excel 单元格值是否为空"""
@@ -425,12 +426,16 @@ def get_date_range_params(start_date: datetime, end_date: datetime) -> dict:
 
 
 def generate_date_windows(start_date: datetime, end_date: datetime, window_days: int = WINDOW_DAYS):
-    """将 [start_date, end_date] 按 window_days 切分为多个时间窗口"""
+    """将 [start_date, end_date] 按 window_days 切分为多个时间窗口
+    相邻窗口重叠 WINDOW_OVERLAP_DAYS 天，确保跨窗口边界的周账单不被遗漏
+    """
     current = start_date
     while current < end_date:
         window_end = min(current + timedelta(days=window_days), end_date)
         yield current, window_end
-        current = window_end
+        if window_end == end_date:
+            break
+        current = window_end - timedelta(days=WINDOW_OVERLAP_DAYS)
 
 def process_api_data(data: dict, shop_name: str) -> List[tuple]:
     """处理API数据"""
