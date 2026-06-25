@@ -14,6 +14,17 @@
   7. `SHOP_WORKERS` 从 1 改回 6，经实测 0×409
 - **影响范围:** 两个版本同步修复，API 调用相关 3 个 @retry 均已加强
 
+## 2026-06-25: 代码审查修复—注释矛盾 + exit_code 缺失 + 类型安全 + 日志级别
+- **文件:**
+  - `得物对账单_sqlserver版.py`
+  - `得物对账单_历史数据版.py`
+- **原因:** OpenCodeReview 审查发现的 4 个问题
+- **决策:**
+  1. **H1**: 更新 ThreadPoolExecutor 注释"店铺串行"→"店铺并行"，与实际代码一致
+  2. **H2**: sqlserver 版 `run_processing` 增加 `return exit_code`，`run_processing_with_logging` 返回退出码
+  3. **M1**: `total_count` 用 `int()` 包裹，防止 API 返回字符串导致 `TypeError`
+  4. **M2**: 签名原文和请求 URL 日志从 `logging.info` 降为 `logging.debug`，避免日志膨胀
+
 
 - **变更:**
   1. `pyodbc.connect(conn_str)` → `pyodbc.connect(conn_str, fast_executemany=True)` — 批量发送，100 万行入库从 15~30 分钟降至 1~3 分钟

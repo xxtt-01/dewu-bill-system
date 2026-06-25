@@ -341,12 +341,12 @@ def fetch_api_data(params: dict, credential: AppCredential) -> dict:
         filtered = {k: v for k, v in all_params.items() if v not in [None, ""] and k != "sign"}
         sorted_params = sorted(filtered.items())
         sign_str = '&'.join([f"{k}={v}" for k, v in sorted_params])
-        logging.info(f"签名原文 [{credential.cred_id}]: {sign_str[:500]}")
+        logging.debug(f"签名原文 [{credential.cred_id}]: {sign_str[:500]}")
 
         # 调试：打印完整请求URL（隐藏app_secret）
         req = requests.Request('GET', API_URL, params=all_params)
         prepared = req.prepare()
-        logging.info(f"请求URL [{credential.cred_id}]: {prepared.url[:500]}")
+        logging.debug(f"请求URL [{credential.cred_id}]: {prepared.url[:500]}")
 
         try:
             response = requests.get(API_URL, params=all_params, timeout=30)
@@ -376,7 +376,7 @@ def fetch_api_data(params: dict, credential: AppCredential) -> dict:
         all_items.extend(page_items)
 
         if total_count == 0:
-            total_count = data.get("total_results", data.get("totalCount", data.get("total_count", data.get("total", 0))))
+            total_count = int(data.get("total_results", data.get("totalCount", data.get("total_count", data.get("total", 0)))))
 
         # 判断是否还有更多页
         if not page_items:
@@ -839,7 +839,7 @@ def run_processing(root, update_log):
                         "insert_count": 0, "download_success_count": 0, "skipped_count": 0,
                         "inserted_records": [], "download_results": {}, "skipped_records": {}}
 
-        # 店铺串行处理（SHOP_WORKERS=1，得物API限流）
+        # 店铺并行处理（SHOP_WORKERS=6，得物API限流已优化）
         results = []
         with ThreadPoolExecutor(max_workers=SHOP_WORKERS) as executor:
             futures = {executor.submit(_process_one_shop, cred): cred for cred in credentials}
@@ -856,6 +856,7 @@ def run_processing(root, update_log):
         exit_code = 1
         logging.error(f"未预期错误: {str(e)}", exc_info=True)
         update_log(f"未预期错误: {str(e)}")
+    return exit_code
 
 def import_bills(root, update_log):
     """导入并处理本地账单文件"""
@@ -1600,16 +1601,18 @@ def import_bills_with_logging(root, update_log):
         update_log("本地账单导入流程结束")
 
 def run_processing_with_logging(root, update_log):
-    """运行账单处理流程并更新日志"""
+    """运行账单处理流程并更新日志，返回 0=成功 1=失败"""
     try:
         logging.info("=== 账单处理流程启动 ===")
         update_log("账单处理流程启动...")
 
-        run_processing(root, update_log)
+        exit_code = run_processing(root, update_log)
+        return exit_code
 
     except Exception as e:
         logging.error(f"未预期错误: {str(e)}", exc_info=True)
         update_log(f"处理失败: {str(e)}")
+        return 1
     finally:
         update_log("账单处理流程结束")
 

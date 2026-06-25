@@ -344,12 +344,12 @@ def fetch_api_data(params: dict, credential: AppCredential) -> dict:
         filtered = {k: v for k, v in all_params.items() if v not in [None, ""] and k != "sign"}
         sorted_params = sorted(filtered.items())
         sign_str = '&'.join([f"{k}={v}" for k, v in sorted_params])
-        logging.info(f"签名原文 [{credential.cred_id}]: {sign_str[:500]}")
+        logging.debug(f"签名原文 [{credential.cred_id}]: {sign_str[:500]}")
 
         # 调试：打印完整请求URL（隐藏app_secret）
         req = requests.Request('GET', API_URL, params=all_params)
         prepared = req.prepare()
-        logging.info(f"请求URL [{credential.cred_id}]: {prepared.url[:500]}")
+        logging.debug(f"请求URL [{credential.cred_id}]: {prepared.url[:500]}")
 
         try:
             response = requests.get(API_URL, params=all_params, timeout=30)
@@ -379,7 +379,7 @@ def fetch_api_data(params: dict, credential: AppCredential) -> dict:
         all_items.extend(page_items)
 
         if total_count == 0:
-            total_count = data.get("total_results", data.get("totalCount", data.get("total_count", data.get("total", 0))))
+            total_count = int(data.get("total_results", data.get("totalCount", data.get("total_count", data.get("total", 0)))))
 
         # 判断是否还有更多页
         if not page_items:
@@ -864,7 +864,7 @@ def run_processing(root, update_log, start_date=None, end_date=None):
                         "insert_count": 0, "download_success_count": 0, "skipped_count": 0,
                         "inserted_records": [], "download_results": {}, "skipped_records": {}}
 
-        # 店铺串行处理（SHOP_WORKERS=1，得物API限流）
+        # 店铺并行处理（SHOP_WORKERS=6，得物API限流已优化）
         results = []
         with ThreadPoolExecutor(max_workers=SHOP_WORKERS) as executor:
             futures = {executor.submit(_process_one_shop, cred): cred for cred in credentials}
