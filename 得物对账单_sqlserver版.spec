@@ -1,36 +1,23 @@
 # -*- mode: python ; coding: utf-8 -*-
-
-block_cipher = None
+import certifi
 
 a = Analysis(
     ['得物对账单_sqlserver版.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=[(certifi.where(), 'certifi')],
     hiddenimports=[
-        'pyodbc',
-        'requests',
-        'tenacity',
-        'pandas',
-        'openpyxl',
-        'tkinter',
-        'tkinter.ttk',
-        'tkinter.messagebox',
-        'urllib.parse',
-        'datetime',
-        'hashlib',
-        'socket',
-        'threading',
-        'typing',
+        'pyodbc', 'requests', 'certifi', 'tenacity', 'pandas', 'openpyxl',
+        'PyQt6', 'PyQt6.QtWidgets', 'PyQt6.QtCore', 'PyQt6.QtGui',
+        'urllib.parse', 'datetime', 'hashlib', 'socket', 'threading', 'typing', 'dotenv',
     ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
     excludes=[],
     noarchive=False,
-    optimize=0,
 )
-pyz = PYZ(a.pure, a.zipped_data)
+pyz = PYZ(a.pure)
 
 exe = EXE(
     pyz,
@@ -38,7 +25,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='得物对账单_sqlserver 版',
+    name='得物对账单自动获取',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

@@ -5,8 +5,8 @@ import pyodbc  # 替换 pymysql 为 pyodbc
 import hashlib
 import time
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QProgressBar,
-    QVBoxLayout, QHBoxLayout, QPlainTextEdit, QPushButton, QLabel, QMessageBox, QTimeEdit, QTabWidget)
-from PyQt6.QtCore import pyqtSignal, Qt, QTime
+    QVBoxLayout, QHBoxLayout, QPlainTextEdit, QPushButton, QLabel, QMessageBox, QDateEdit, QTabWidget)
+from PyQt6.QtCore import pyqtSignal, Qt, QDate
 from PyQt6.QtGui import QFont
 from urllib.parse import quote_plus
 import requests
@@ -61,6 +61,9 @@ DOWNLOAD_WAIT_SECONDS = 120  # 得物生成文件等待时间
 
 # 空值集合（Excel 中的多种空值表示）
 EMPTY_VALUES = {'', 'NaN', 'nan', 'NAN', 'None', 'none', 'NONE'}
+
+# 日期窗口配置
+WINDOW_DAYS = 30  # 得物 API 单次查询最大天数间隔
 
 def is_empty(value) -> bool:
     """判断 Excel 单元格值是否为空"""
@@ -411,11 +414,8 @@ def parse_date(date_str: str) -> datetime:
             continue
     raise ValueError(f"无法解析的日期格式: {date_str}")
 
-def get_default_dates() -> dict:
-    """获取默认日期（整体往前推7天）"""
-    today = datetime.now()
-    end_date = today - timedelta(days=7)
-    start_date = end_date - timedelta(days=30)
+def get_date_range_params(start_date: datetime, end_date: datetime) -> dict:
+    """根据起止日期生成 API 请求参数"""
     return {
         "bill_start_date": start_date.strftime("%Y-%m-%d"),
         "bill_end_date": end_date.strftime("%Y-%m-%d"),
@@ -423,6 +423,15 @@ def get_default_dates() -> dict:
         "page_no": 1,
         "page_size": 30
     }
+
+
+def generate_date_windows(start_date: datetime, end_date: datetime, window_days: int = WINDOW_DAYS):
+    """将 [start_date, end_date] 按 window_days 切分为多个时间窗口"""
+    current = start_date
+    while current < end_date:
+        window_end = min(current + timedelta(days=window_days), end_date)
+        yield current, window_end
+        current = window_end
 
 def process_api_data(data: dict, shop_name: str) -> List[tuple]:
     """处理API数据"""
@@ -498,7 +507,7 @@ class BillProcessor:
         self.total_bills = len(bill_nos)
         self.completed_bills = 0
 
-    @retry(stop=stop_after_attempt(7), wait=wait_exponential(min=2, max=30))
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=10))
     def _generate_bill(self, bill_no: str) -> str:
         """调用生成API"""
         params = {
@@ -520,7 +529,7 @@ class BillProcessor:
             logging.error(f"生成账单失败 [{self.credential.cred_id}]: {str(e)}")
             raise
 
-    @retry(stop=stop_after_attempt(7), wait=wait_exponential(min=2, max=30))
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=10))
     def _get_download_url(self, file_key: str) -> str:
         """获取下载链接"""
         params = {
@@ -632,8 +641,8 @@ def diagnose_network(host: str) -> bool:
         logging.error(f"域名解析失败: {host}, 错误: {str(e)}")
         return False
 
-def process_import(root, update_log, text_handler=None):
-    """运行账单入库流程"""
+def process_import(root, update_log, text_handler=None, start_date=None, end_date=None):
+    """运行账单入库流程（可选按日期窗口过滤）"""
     try:
         log_file = setup_logging(text_handler)
         logging.info("=== 账单入库流程启动 ===")
@@ -647,6 +656,14 @@ def process_import(root, update_log, text_handler=None):
             if os.path.isdir(shop_path):
                 for file in os.listdir(shop_path):
                     if file.endswith('.xlsx') and not file.startswith('~$'):
+                        # 按日期窗口过滤（仅对批量模式生效）
+                        if start_date and end_date:
+                            try:
+                                file_date = datetime.strptime(file[:8], '%Y%m%d')
+                                if not (start_date <= file_date <= end_date):
+                                    continue
+                            except (ValueError, IndexError):
+                                continue
                         file_path = os.path.join(shop_path, file)
                         logging.info(f"开始处理文件: {file_path}")
                         update_log(f"正在处理: {file_path}", tab=shop_folder)
@@ -726,13 +743,13 @@ def process_import(root, update_log, text_handler=None):
         logging.error(f"未预期错误: {str(e)}", exc_info=True)
         update_log(f"处理失败: {str(e)}")
 
-def process_import_with_logging(root, update_log, text_handler=None):
-    """运行账单入库流程并更新日志"""
+def process_import_with_logging(root, update_log, text_handler=None, start_date=None, end_date=None):
+    """运行账单入库流程并更新日志（可选按日期窗口过滤）"""
     try:
         logging.info("=== 账单入库流程启动 ===")
         update_log("账单入库流程启动...")
 
-        process_import(root, update_log, text_handler)
+        process_import(root, update_log, text_handler, start_date, end_date)
 
     except Exception as e:
         logging.error(f"未预期错误: {str(e)}", exc_info=True)
@@ -740,7 +757,7 @@ def process_import_with_logging(root, update_log, text_handler=None):
     finally:
         update_log("账单入库流程结束")
 
-def run_processing(root, update_log):
+def run_processing(root, update_log, start_date=None, end_date=None):
     exit_code = 0
     results = []
 
@@ -751,9 +768,17 @@ def run_processing(root, update_log):
         if not credentials:
             raise ValueError("没有可用的应用凭证")
 
-        input_params = get_default_dates()
-        logging.info(f"默认输入参数: {input_params}")
-        update_log(f"默认输入参数: {input_params}")
+        if start_date and end_date:
+            input_params = get_date_range_params(start_date, end_date)
+            logging.info(f"自定义日期范围: {start_date.date()} ~ {end_date.date()}")
+            update_log(f"日期范围: {start_date.date()} ~ {end_date.date()}")
+        else:
+            # 兜底：使用默认 [today-37, today-7]
+            today = datetime.now()
+            default_end = today - timedelta(days=7)
+            default_start = default_end - timedelta(days=30)
+            input_params = get_date_range_params(default_start, default_end)
+            logging.info(f"默认日期范围: {default_start.date()} ~ {default_end.date()}")
 
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -856,9 +881,10 @@ def run_processing(root, update_log):
         exit_code = 1
         logging.error(f"未预期错误: {str(e)}", exc_info=True)
         update_log(f"未预期错误: {str(e)}")
+    return exit_code
 
-def import_bills(root, update_log):
-    """导入并处理本地账单文件"""
+def import_bills(root, update_log, start_date=None, end_date=None):
+    """导入并处理本地账单文件（可选 start_date/end_date 按窗口过滤）"""
     try:
         logging.info("=== 本地账单导入流程启动 ===")
         update_log("本地账单导入流程启动...")
@@ -873,6 +899,14 @@ def import_bills(root, update_log):
             if os.path.isdir(shop_path):
                 for file in os.listdir(shop_path):
                     if file.endswith('.xlsx') and not file.endswith('_tiqu.xlsx') and not file.startswith('~$'):
+                        # 按日期窗口过滤（仅对批量模式生效）
+                        if start_date and end_date:
+                            try:
+                                file_date = datetime.strptime(file[:8], '%Y%m%d')
+                                if not (start_date <= file_date <= end_date):
+                                    continue
+                            except (ValueError, IndexError):
+                                continue
                         src_path = os.path.join(shop_path, file)
                         dest_dir = os.path.join(EXTRACT_DIR, shop_folder)
                         dest_path = os.path.join(dest_dir, file.replace('.xlsx', '_tiqu.xlsx'))
@@ -1585,13 +1619,13 @@ def test_db_connection_gui(update_log, msg_signal=None):
         if msg_signal:
             msg_signal.emit("error", "错误", f"测试异常: {str(e)}")
 
-def import_bills_with_logging(root, update_log):
-    """运行账单导入流程并更新日志"""
+def import_bills_with_logging(root, update_log, start_date=None, end_date=None):
+    """运行账单导入流程并更新日志（可选按日期窗口过滤）"""
     try:
         logging.info("=== 本地账单导入流程启动 ===")
         update_log("本地账单导入流程启动...")
 
-        import_bills(root, update_log)
+        import_bills(root, update_log, start_date, end_date)
 
     except Exception as e:
         logging.error(f"未预期错误: {str(e)}", exc_info=True)
@@ -1599,31 +1633,32 @@ def import_bills_with_logging(root, update_log):
     finally:
         update_log("本地账单导入流程结束")
 
-def run_processing_with_logging(root, update_log):
-    """运行账单处理流程并更新日志"""
+def run_processing_with_logging(root, update_log, start_date=None, end_date=None):
+    """运行账单处理流程并更新日志，返回 0=成功 1=失败"""
     try:
         logging.info("=== 账单处理流程启动 ===")
         update_log("账单处理流程启动...")
 
-        run_processing(root, update_log)
+        exit_code = run_processing(root, update_log, start_date, end_date)
+        return exit_code
 
     except Exception as e:
         logging.error(f"未预期错误: {str(e)}", exc_info=True)
         update_log(f"处理失败: {str(e)}")
+        return 1
     finally:
         update_log("账单处理流程结束")
 
 
 class MainWindow(QMainWindow):
-    """得物对账单控制系统 - 主窗口（深色玻璃拟态风格）"""
+    """得物对账单 - 历史数据批量获取（深色玻璃拟态风格）"""
     log_signal = pyqtSignal(str, str)  # (tab_name, message)
-    countdown_signal = pyqtSignal(int)
     status_signal = pyqtSignal(str, str)
     msgbox_signal = pyqtSignal(str, str, str)  # (type, title, message)
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("得物对账单控制系统")
+        self.setWindowTitle("得物对账单 - 历史数据批量获取")
         self.setMinimumSize(800, 500)
 
         os.makedirs(LOG_DIR, exist_ok=True)
@@ -1649,7 +1684,6 @@ class MainWindow(QMainWindow):
 
         # 信号连接（线程安全）
         self.log_signal.connect(self._append_log)
-        self.countdown_signal.connect(lambda v: self.countdown_label.setText(str(v)))
         self.status_signal.connect(self._update_status_label)
         self.msgbox_signal.connect(self._show_msgbox)
 
@@ -1658,10 +1692,8 @@ class MainWindow(QMainWindow):
 
         # Tab 路由：按店铺分流日志
         self.log_tabs = {}
-        self._schedule_thread = None  # 调度线程引用，用于安全退出
 
         self._setup_ui()
-        self._setup_auto_run()
 
     def _setup_ui(self):
         """构建界面"""
@@ -1744,7 +1776,7 @@ class MainWindow(QMainWindow):
 
         buttons = [
             ("下载账单", lambda: self._run_task("下载账单",
-                lambda: run_processing_with_logging(self, self._update_log))),
+                lambda: self._run_single_download())),
             ("账单处理", lambda: self._run_task("账单处理",
                 lambda: import_bills_with_logging(self, self._update_log))),
             ("账单入库", lambda: self._run_task("账单入库",
@@ -1762,33 +1794,36 @@ class MainWindow(QMainWindow):
 
         root_layout.addLayout(btn_layout)
 
-        # ── 定时设置行 ──
-        sched_layout = QHBoxLayout()
-        sched_layout.setSpacing(8)
+        # ── 日期范围设置行 ──
+        date_layout = QHBoxLayout()
+        date_layout.setSpacing(8)
 
-        sched_label = QLabel("每天执行时间：")
-        sched_label.setFont(QFont("Consolas", 11))
-        sched_label.setStyleSheet(f"color: {self.C_FG_SEC}; background: transparent;")
-        sched_layout.addWidget(sched_label)
+        date_label = QLabel("起始日期：")
+        date_label.setFont(QFont("Consolas", 11))
+        date_label.setStyleSheet(f"color: {self.C_FG_SEC}; background: transparent;")
+        date_layout.addWidget(date_label)
 
-        self.schedule_time = QTimeEdit()
-        self.schedule_time.setDisplayFormat("HH:mm")
-        self.schedule_time.setTime(QTime(2, 0))
-        self.schedule_time.setStyleSheet(f"""
-            QTimeEdit {{
-                background-color: {self.C_CARD};
-                color: {self.C_FG};
-                font-family: Consolas;
-                font-size: 13px;
-                padding: 6px 10px;
-                border: 1px solid {self.C_BORDER};
-                border-radius: 6px;
-            }}
-        """)
-        sched_layout.addWidget(self.schedule_time)
+        self.start_date = QDateEdit()
+        self.start_date.setDisplayFormat("yyyy-MM-dd")
+        self.start_date.setDate(QDate(2025, 1, 1))
+        self.start_date.setCalendarPopup(True)
+        self.start_date.setStyleSheet(self._date_edit_style())
+        date_layout.addWidget(self.start_date)
 
-        start_btn = QPushButton("启动自动运行")
-        start_btn.setStyleSheet(f"""
+        end_label = QLabel("终止日期：")
+        end_label.setFont(QFont("Consolas", 11))
+        end_label.setStyleSheet(f"color: {self.C_FG_SEC}; background: transparent;")
+        date_layout.addWidget(end_label)
+
+        self.end_date = QDateEdit()
+        self.end_date.setDisplayFormat("yyyy-MM-dd")
+        self.end_date.setDate(QDate.currentDate())
+        self.end_date.setCalendarPopup(True)
+        self.end_date.setStyleSheet(self._date_edit_style())
+        date_layout.addWidget(self.end_date)
+
+        batch_btn = QPushButton("开始历史数据获取")
+        batch_btn.setStyleSheet(f"""
             QPushButton {{
                 background-color: {self.C_SUCCESS};
                 color: #1c1c24;
@@ -1803,23 +1838,23 @@ class MainWindow(QMainWindow):
                 background-color: #3db869;
             }}
         """)
-        start_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        start_btn.clicked.connect(self._start_schedule)
-        sched_layout.addWidget(start_btn)
+        batch_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        batch_btn.clicked.connect(lambda: self._run_task("历史数据获取", self._run_batch))
+        date_layout.addWidget(batch_btn)
 
-        sched_layout.addStretch(1)
-        root_layout.addLayout(sched_layout)
+        date_layout.addStretch(1)
+        root_layout.addLayout(date_layout)
 
         # ── 状态行 ──
         status_layout = QHBoxLayout()
         status_layout.setSpacing(4)
 
-        self.countdown_label = QLabel("0")
-        self.countdown_label.setFont(QFont("Consolas", 28))
-        self.countdown_label.setStyleSheet(f"color: {self.C_ACCENT}; background: transparent;")
-        status_layout.addWidget(self.countdown_label)
+        self.window_progress_label = QLabel("就绪")
+        self.window_progress_label.setFont(QFont("Consolas", 11))
+        self.window_progress_label.setStyleSheet(f"color: {self.C_ACCENT}; background: transparent;")
+        status_layout.addWidget(self.window_progress_label)
 
-        self.status_label = QLabel("\u25cf \u7a7a\u95f2")
+        self.status_label = QLabel("● 空闲")
         self.status_label.setFont(QFont("Consolas", 10))
         self.status_label.setStyleSheet(f"color: {self.C_FG_SEC}; background: transparent;")
         status_layout.addWidget(self.status_label)
@@ -1844,7 +1879,7 @@ class MainWindow(QMainWindow):
 
         status_layout.addStretch(1)
 
-        pause_btn = QPushButton("\u6682\u505c")
+        pause_btn = QPushButton("暂停")
         pause_btn.setStyleSheet(f"""
             QPushButton {{
                 background-color: {self.C_CARD};
@@ -1861,48 +1896,94 @@ class MainWindow(QMainWindow):
             }}
         """)
         pause_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        pause_btn.clicked.connect(lambda: setattr(self.auto_run, 'paused', True))
+        pause_btn.clicked.connect(lambda: setattr(self, '_batch_paused', True))
         status_layout.addWidget(pause_btn)
 
         root_layout.addLayout(status_layout)
 
-    def _setup_auto_run(self):
-        """自动运行控制"""
-        class AutoRun:
-            def __init__(self, window):
-                self._window = window
-                self._lock = threading.Lock()
-                self._paused = False
-                self._running = False
+        # 批量处理暂停标志
+        self._batch_paused = False
 
-            @property
-            def paused(self):
-                with self._lock:
-                    return self._paused
+    def _date_edit_style(self):
+        """QDateEdit 样式"""
+        return f"""
+            QDateEdit {{
+                background-color: {self.C_CARD};
+                color: {self.C_FG};
+                font-family: Consolas;
+                font-size: 13px;
+                padding: 6px 10px;
+                border: 1px solid {self.C_BORDER};
+                border-radius: 6px;
+            }}
+            QDateEdit::drop-down {{
+                border: none;
+            }}
+            QDateEdit::down-arrow {{
+                image: none;
+                border: none;
+            }}
+        """
 
-            @paused.setter
-            def paused(self, value):
-                with self._lock:
-                    self._paused = value
-                if value:
-                    self._window.status_signal.emit("\u25cf \u5df2\u6682\u505c", self._window.C_DANGER)
-                else:
-                    self._window.status_signal.emit("\u25cf \u8fd0\u884c\u4e2d", self._window.C_SUCCESS)
+    def _run_single_download(self):
+        """读取 GUI 日期，执行单次下载"""
+        s = self.start_date.date().toPyDate()
+        e = self.end_date.date().toPyDate()
+        start_dt = datetime(s.year, s.month, s.day)
+        end_dt = datetime(e.year, e.month, e.day)
+        run_processing_with_logging(self, self._update_log, start_dt, end_dt)
 
-            @property
-            def running(self):
-                with self._lock:
-                    return self._running
+    def _run_batch(self):
+        """遍历所有 30 天窗口，批量获取历史数据"""
+        s = self.start_date.date().toPyDate()
+        e = self.end_date.date().toPyDate()
+        start_dt = datetime(s.year, s.month, s.day)
+        end_dt = datetime(e.year, e.month, e.day)
 
-            @running.setter
-            def running(self, value):
-                with self._lock:
-                    self._running = value
-                    paused = self._paused
-                if not value and not paused:
-                    self._window.status_signal.emit("\u25cf \u7a7a\u95f2", self._window.C_FG_SEC)
+        windows = list(generate_date_windows(start_dt, end_dt))
+        total = len(windows)
 
-        self.auto_run = AutoRun(self)
+        if total == 0:
+            self._update_log("起始日期不能晚于终止日期")
+            return
+
+        self._batch_paused = False
+        self.status_signal.emit("● 运行中", self.C_SUCCESS)
+        self._update_log(f"=== 历史数据批量获取启动，共 {total} 个时间窗口 ===")
+
+        for i, (ws, we) in enumerate(windows):
+            if self._batch_paused:
+                self._update_log("批量处理已暂停")
+                break
+
+            self.window_progress_label.setText(f"第 {i+1}/{total} 个窗口")
+            self._update_log(f"=== 时间窗口 {i+1}/{total}: {ws.date()} ~ {we.date()} ===")
+
+            # 阶段1：下载
+            self._update_log("--- 阶段1: 下载账单 ---")
+            dl_exit = run_processing_with_logging(self, self._update_log, ws, we)
+            if self._batch_paused:
+                break
+            if dl_exit != 0:
+                self._update_log("下载阶段失败，跳过提纯和入库，进入下一个窗口")
+                continue
+
+            # 阶段2：提纯（按窗口过滤）
+            self._update_log("--- 阶段2: 账单处理 ---")
+            import_bills_with_logging(self, self._update_log, ws, we)
+            if self._batch_paused:
+                break
+
+            # 阶段3：入库（按窗口过滤）
+            self._update_log("--- 阶段3: 账单入库 ---")
+            process_import_with_logging(self, self._update_log, self.log_handler, ws, we)
+
+        if self._batch_paused:
+            self.window_progress_label.setText("已暂停")
+        else:
+            self.window_progress_label.setText("全部完成")
+            self._update_log("=== 历史数据批量获取完成 ===")
+        self.status_signal.emit("● 空闲", self.C_FG_SEC)
 
     def _create_log_text_edit(self) -> QPlainTextEdit:
         """创建日志文本控件（工厂方法，保持主题一致）"""
@@ -1985,95 +2066,12 @@ class MainWindow(QMainWindow):
 
         threading.Thread(target=wrapper, daemon=True).start()
 
-    def _safe_run_phase(self, task_id, task_func):
-        """在调度循环中安全执行一个阶段，若任务已被手动触发则跳过"""
-        with self._task_lock:
-            if task_id in self._running_tasks:
-                self._update_log(f"【{task_id}】已被手动执行，调度跳过此阶段")
-                return
-            self._running_tasks.add(task_id)
-        try:
-            task_func()
-        finally:
-            with self._task_lock:
-                self._running_tasks.discard(task_id)
-
-    def _get_next_run_seconds(self) -> int:
-        """计算距下次定时执行还有多少秒"""
-        now = datetime.now()
-        qt = self.schedule_time.time()
-        target_today = now.replace(hour=qt.hour(), minute=qt.minute(), second=0, microsecond=0)
-        if target_today > now:
-            return int((target_today - now).total_seconds())
-        else:
-            target_tomorrow = target_today + timedelta(days=1)
-            return int((target_tomorrow - now).total_seconds()) + 1
-
-    def _start_schedule(self):
-        """用户点击"启动自动运行"时触发"""
-        if self.auto_run.paused:
-            self.auto_run.paused = False
-            self._update_log("自动运行已恢复")
-            return
-        if self.auto_run.running:
-            self._update_log("自动运行已启动，请勿重复点击")
-            return
-        self.auto_run.running = True
-        self._update_log(f"定时任务已启动，每天 {self.schedule_time.text()} 执行")
-        self._schedule_thread = threading.Thread(target=self._run_schedule_loop, daemon=True)
-        self._schedule_thread.start()
-
-    def _sleep_cancellable(self, seconds):
-        for _ in range(seconds):
-            if self.auto_run.paused:
-                return False
-            time.sleep(1)
-        return True
-
-    def _run_schedule_loop(self):
-        """定时循环：等待到执行时间 → 3 阶段 → 等待到次日"""
-        while not self.auto_run.paused:
-            try:
-                wait_seconds = self._get_next_run_seconds()
-                hours = wait_seconds // 3600
-                mins = (wait_seconds % 3600) // 60
-                self._update_log(f"距下次执行还有 {hours} 小时 {mins} 分（{self.schedule_time.text()}）")
-                self.countdown_signal.emit(int(wait_seconds))
-                if not self._sleep_cancellable(wait_seconds):
-                    break
-                self.countdown_signal.emit(0)
-
-                logging.info("=== 开始自动运行序列 ===")
-                self._update_log("=== 开始自动运行序列 ===")
-                self._safe_run_phase("下载账单", lambda: run_processing_with_logging(self, self._update_log))
-                if self.auto_run.paused: break
-                self._update_log("下载账单流程完成，等待 10 秒...")
-                if not self._sleep_cancellable(10): break
-                self._safe_run_phase("账单处理", lambda: import_bills_with_logging(self, self._update_log))
-                if self.auto_run.paused: break
-                self._update_log("账单处理流程完成，等待 10 秒...")
-                if not self._sleep_cancellable(10): break
-                self._safe_run_phase("账单入库", lambda: process_import_with_logging(self, self._update_log, self.log_handler))
-                if self.auto_run.paused: break
-                self._update_log(f"本轮执行完成，等待到 {self.schedule_time.text()} 执行下一轮...")
-            except Exception as e:
-                logging.error(f"自动运行序列异常: {str(e)}", exc_info=True)
-                self._update_log(f"自动运行序列异常: {str(e)}，60 秒后重试...")
-                if not self._sleep_cancellable(60): break
-        self.auto_run.running = False
-        self._update_log("自动运行已停止")
-
     def closeEvent(self, event):
         """窗口关闭事件"""
         reply = QMessageBox.question(self, "退出",
                                      "确定要退出程序吗？\n正在运行的任务将被中断。",
                                      QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         if reply == QMessageBox.StandardButton.Yes:
-            self.auto_run.paused = True
-            self.auto_run.running = False
-            # 给调度线程 3 秒时间感知暂停标志并退出
-            if self._schedule_thread and self._schedule_thread.is_alive():
-                self._schedule_thread.join(timeout=3)
             # 记录正在运行的任务（这些线程是 daemon=True，主线程退出时会被强制终止）
             with self._task_lock:
                 if self._running_tasks:

@@ -1,3 +1,54 @@
+## 2026-06-25: API 409 修复 + 批量流程完善 + 恢复并行
+- **文件:**
+  - `得物对账单_sqlserver版.py`
+  - `得物对账单_历史数据版.py`
+- **原因:** 得物 API 间歇返回 409（业务高峰限流），原因有二：(1) 分页未识别 `total_results` 导致多请求了不必要的第 2 页，触发限流阈值；(2) 重试仅 3 次、最长等 10s，不足以应对 409
+- **根因:** API 返回 `total_results` 而非 `totalCount`，paginate 判断永远不成立，每窗多请求一次空页
+- **决策:**
+  1. `fetch_api_data`: 增加 `total_results` 字段识别，移除多余的第 2 页请求
+  2. `@retry`: 3→7 次，max=10→30 秒，给 API 更多恢复时间
+  3. 分页间加 `time.sleep(1)`，降低连续请求触发限流的概率
+  4. `run_processing` 增加 `return exit_code`，`run_processing_with_logging` 向上传递退出码
+  5. `_run_batch`: 下载失败时跳过提纯和入库，进入下一窗口
+  6. `import_bills` / `process_import`: 增加 `start_date`/`end_date` 参数，按文件名日期过滤
+  7. `SHOP_WORKERS` 从 1 改回 6，经实测 0×409
+- **影响范围:** 两个版本同步修复，API 调用相关 3 个 @retry 均已加强
+
+
+- **变更:**
+  1. `pyodbc.connect(conn_str)` → `pyodbc.connect(conn_str, fast_executemany=True)` — 批量发送，100 万行入库从 15~30 分钟降至 1~3 分钟
+  2. `DRIVER={SQL Server}` → `DRIVER={ODBC Driver 17 for SQL Server}` — 使用已安装的新版驱动，提升批量操作效率
+
+## 2026-06-24: 新增"历史数据版"— 用户自定义日期范围，按30天窗口遍历
+- **文件:** `得物对账单_历史数据版.py`（新建，基于原版复制改造）
+- **原因:** 原版时间窗口固定为 [today-37, today-7]，无法拉取历史数据。得物 API 要求单次查询最多 30 天
+- **决策:**
+  - 复制原文件为独立版本，保持主体逻辑不变
+  - 新增 `get_date_range_params(start, end)` 替代 `get_default_dates()`
+  - 新增 `generate_date_windows()` 将用户起止日期按 30 天切分
+  - GUI：删除定时调度控件，替换为起始/终止日期选择器（QDateEdit）+ "开始历史数据获取"按钮
+  - `_run_batch` 遍历所有窗口，每个窗口执行下载→提纯→入库三阶段
+  - 窗口进度显示："第 3/12 个窗口"
+  - 保留暂停功能，支持窗口级暂停
+  - 手动"下载账单"按钮读取当前 GUI 日期单次执行
+
+## 2026-06-24: OCR 审查修复 — 死代码/裸 except/JSON 解析/线程退出/CONTEXT.md
+- **文件:**
+  - `得物对账单_sqlserver版.py`
+  - `CONTEXT.md`
+- **原因:** OCR 审查发现 5 个 IMPORTANT 问题
+- **修复:**
+  1. **`max_id_before` 死代码** — 删除 `save_records` 中 `SELECT MAX(id)` 查询和未使用的 `max_id_before` 变量
+  2. **裸 `except:`** — `check_file_changed` 和 `update_file_tracking` 中的 `except:` 改为 `except (json.JSONDecodeError, OSError):`
+  3. **`response.json()` 未捕获 ValueError** — `fetch_api_data` 增加 `except ValueError` 分支记录 JSON 解析错误日志
+  4. **窗口关闭线程安全** — `closeEvent` 增加调度线程 `join(timeout=3)` 等待退出 + 记录正在运行的任务警告
+  5. **CONTEXT.md** — 更新"监控 5 家店铺"→"6 家店铺"，移除硬编码店铺列表
+
+## 2026-06-24: PyInstaller 打包为"得物对账单自动获取.exe"
+- **文件:** `得物对账单_sqlserver版.spec`（重建）
+- **输出:** `dist/得物对账单自动获取.exe`（177MB，--onefile --windowed）
+- **配置:** hiddenimports 含 PyQt6/pyodbc/pandas/openpyxl/requests/certifi 等；包含 certifi CA 证书
+
 ## 2026-06-01 17:35: 修复 5 个潜在问题
 - **文件:** `得物对账单_sqlserver版.py`
 - **原因:** 代码审查发现 5 个潜在问题，逐一修复
@@ -8,6 +59,19 @@
   4. **`auto_run` 动态类型** — `type('AutoRun', ...)` → 正式 `class AutoRun` 定义，消除每次 `main_gui()` 调用创建新匿名类的泄漏
   5. **窗口关闭线程终止** — 添加 `WM_DELETE_WINDOW` 协议处理器，关闭前暂停自动运行并确认退出
 - **影响范围:** 仅 `得物对账单_sqlserver版.py`
+
+## 2026-06-24 22:32: 日志系统重构 — QTabWidget 多店铺日志面板
+- **文件:** `得物对账单_sqlserver版.py`
+- **原因:** 6 家店铺并行处理时日志交错混杂，难以追踪每家店铺的执行情况
+- **决策:**
+  - 单一日志面板 → QTabWidget，每店铺独立标签页
+  - `log_signal` 改签 `pyqtSignal(str)` → `pyqtSignal(str, str)` 带 tab 路由
+  - `_update_log` 增加 `tab="总览"` 默认参数，旧调用点无需修改
+  - 下载阶段 `_process_one_shop` 用 `shop_log` 包装路由到店铺 tab
+  - 提纯/入库阶段根据 `shop_folder` 路由日志
+  - `QtLogHandler` 日志全部进"总览" tab
+  - 标签页懒创建：店铺首次输出日志时自动生成
+- **影响范围:** 仅 `得物对账单_sqlserver版.py`，布局层 + 信号层 + 业务层日志调用
 
 ## 2026-06-01 18:30: 修复 OSError 日志缺失 + PyInstaller 重新打包
 - **文件:** `得物对账单_sqlserver版.py`
