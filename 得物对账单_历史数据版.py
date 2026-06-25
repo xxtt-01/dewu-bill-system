@@ -776,7 +776,7 @@ def process_import(root, update_log, text_handler=None, start_date=None, end_dat
                     success += 1
                 else:
                     fail += 1
-                    update_log(f"失败: {os.path.basename(fp)}（{sf}）")
+                    update_log(f"失败: {os.path.basename(fp)}（{sf}）", tab=sf)
                 done = success + fail
                 if done % 3 == 0 or done == total:
                     update_log(f"进度: {done}/{total}（成功={success}, 失败={fail}）")
