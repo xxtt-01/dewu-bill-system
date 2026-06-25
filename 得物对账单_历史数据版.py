@@ -677,6 +677,7 @@ def _import_one_file(file_path: str, shop_folder: str, update_log) -> bool:
                     if "08S01" in str(e) and retry_count < max_retries - 1:
                         retry_count += 1
                         logging.warning(f"连接断开 ({retry_count}/{max_retries})，重试...")
+                        update_log(f"连接断开自动重试 ({retry_count}/{max_retries})...")
                         time.sleep(5)
                     else:
                         raise
@@ -700,7 +701,11 @@ def _import_one_file(file_path: str, shop_folder: str, update_log) -> bool:
                 _retry_import(import_bill_overview, '账单总览', cursor, xls_cache['账单总览'], shop_name)
 
             if imported:
-                record_import_new(cursor, bill_no, shop_name)
+                try:
+                    record_import_new(cursor, bill_no, shop_name)
+                except Exception as e:
+                    logging.error(f"记录导入状态失败 {bill_no}: {e}")
+                    update_log(f"⚠ 数据已入库但状态记录失败: {bill_no}", tab=shop_folder)
 
         return True
 
@@ -757,6 +762,7 @@ def process_import(root, update_log, text_handler=None, start_date=None, end_dat
                     success += 1
                 else:
                     fail += 1
+                    update_log(f"失败: {os.path.basename(fp)}（{sf}）")
                 done = success + fail
                 if done % 3 == 0 or done == total:
                     update_log(f"进度: {done}/{total}（成功={success}, 失败={fail}）")
@@ -1608,7 +1614,8 @@ def import_cargo_damage(cursor, data: pd.DataFrame, shop_name: str, bill_no: str
     _amt_cols = ['商品金额（元）', '平台预付款收回金额（元）', '操作服务费（元）',
                  '认证直发服务费（元）', '技术服务费（元）', '平台基础服务费（元）',
                  '其中:基础服务费金额（元）', '其中:履约服务费金额（元）', '转账手续费（元）',
-                 '售后无忧服务费（元）']
+                 '售后无忧服务费（元）', '消费者邮费补贴（元）', '客服托管服务费（元）',
+                 '包装服务费（元）', '结算金额（元）']
 
     columns = ", ".join(field_mapping.values()) + ", ZH, bill_no, bill_period"
     placeholders = ", ".join(["?"] * (len(field_mapping) + 3))
