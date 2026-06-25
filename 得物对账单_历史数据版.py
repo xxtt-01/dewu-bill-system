@@ -56,6 +56,7 @@ OSS_DOWNLOAD_EXPIRY = 3600
 # 并发配置
 DOWNLOAD_WORKERS = 4      # 文件下载并行数
 SHOP_WORKERS = 6          # 店铺并行处理（得物API限流已优化）
+IMPORT_WORKERS = 3        # 入库并行数（每线程独立数据库连接）
 DOWNLOAD_WAIT_SECONDS = 120  # 得物生成文件等待时间
 
 # 空值集合（Excel 中的多种空值表示）
@@ -180,7 +181,8 @@ def setup_logging(text_handler) -> str:
     logger.addHandler(file_handler)
 
     # 添加文本控件处理器
-    logger.addHandler(text_handler)
+    if text_handler:
+        logger.addHandler(text_handler)
 
     logging.info("日志系统初始化完成")  # 新增日志记录
     return log_file
@@ -645,8 +647,70 @@ def diagnose_network(host: str) -> bool:
         logging.error(f"域名解析失败: {host}, 错误: {str(e)}")
         return False
 
+def _import_one_file(file_path: str, shop_folder: str, update_log) -> bool:
+    """处理单个文件的入库（供线程池调用，每个线程独立 DB 连接）"""
+    try:
+        filename = os.path.basename(file_path)
+        bill_no = filename.replace('_tiqu.xlsx', '')
+        shop_name = shop_folder
+        imported = False
+
+        xls_cache = pd.read_excel(file_path, sheet_name=None, header=None)
+        sheet_names = set(xls_cache.keys())
+
+        bill_period = ''
+        if '账单总览' in sheet_names:
+            bill_period = extract_bill_period_from_data(xls_cache['账单总览'])
+
+        def _retry_import(import_func, sheet_name, *args):
+            nonlocal imported
+            if sheet_name not in sheet_names:
+                return
+            retry_count = 0
+            max_retries = 3
+            while retry_count < max_retries:
+                try:
+                    import_func(*args)
+                    imported = True
+                    break
+                except pyodbc.Error as e:
+                    if "08S01" in str(e) and retry_count < max_retries - 1:
+                        retry_count += 1
+                        logging.warning(f"连接断开 ({retry_count}/{max_retries})，重试...")
+                        time.sleep(5)
+                    else:
+                        raise
+
+        with DBConnection() as cursor:
+            if check_if_imported_new(cursor, bill_no):
+                logging.info(f"账单 {bill_no} 已导入，跳过")
+                return True
+
+            if '销售订单' in sheet_names:
+                _retry_import(import_sales_orders, '销售订单', cursor, prepare_df(xls_cache['销售订单']), shop_name, bill_no, bill_period)
+            if '退货退款订单' in sheet_names:
+                _retry_import(import_refund_orders, '退货退款订单', cursor, prepare_df(xls_cache['退货退款订单']), shop_name, bill_no, bill_period)
+            if '本期结算其他项费用' in sheet_names:
+                _retry_import(import_other_fee, '本期结算其他项费用', cursor, prepare_df(xls_cache['本期结算其他项费用']), shop_name, bill_no, bill_period)
+            if '扣减其他费用明细' in sheet_names:
+                _retry_import(import_deduction_detail, '扣减其他费用明细', cursor, prepare_df(xls_cache['扣减其他费用明细']), shop_name, bill_no, bill_period)
+            if '本期货损买进订单' in sheet_names:
+                _retry_import(import_cargo_damage, '本期货损买进订单', cursor, prepare_df(xls_cache['本期货损买进订单']), shop_name, bill_no, bill_period)
+            if '账单总览' in sheet_names:
+                _retry_import(import_bill_overview, '账单总览', cursor, xls_cache['账单总览'], shop_name)
+
+            if imported:
+                record_import_new(cursor, bill_no, shop_name)
+
+        return True
+
+    except Exception as e:
+        logging.error(f"处理失败 {file_path}: {str(e)}")
+        return False
+
+
 def process_import(root, update_log, text_handler=None, start_date=None, end_date=None):
-    """运行账单入库流程（可选按日期窗口过滤）"""
+    """运行账单入库流程（可选按日期窗口过滤，多线程并行）"""
     try:
         log_file = setup_logging(text_handler)
         logging.info("=== 账单入库流程启动 ===")
@@ -654,13 +718,15 @@ def process_import(root, update_log, text_handler=None, start_date=None, end_dat
 
         import warnings
         warnings.filterwarnings('ignore', category=UserWarning, module=r'openpyxl\.styles\.stylesheet')
+        warnings.simplefilter('ignore', FutureWarning)
 
+        # 收集所有待入库文件
+        all_files = []
         for shop_folder in os.listdir(EXTRACT_DIR):
             shop_path = os.path.join(EXTRACT_DIR, shop_folder)
             if os.path.isdir(shop_path):
                 for file in os.listdir(shop_path):
                     if file.endswith('.xlsx') and not file.startswith('~$'):
-                        # 按日期窗口过滤（仅对批量模式生效）
                         if start_date and end_date:
                             try:
                                 file_date = datetime.strptime(file[:8], '%Y%m%d')
@@ -668,81 +734,42 @@ def process_import(root, update_log, text_handler=None, start_date=None, end_dat
                                     continue
                             except (ValueError, IndexError):
                                 continue
-                        file_path = os.path.join(shop_path, file)
-                        logging.info(f"开始处理文件: {file_path}")
-                        update_log(f"正在处理: {file_path}", tab=shop_folder)
+                        all_files.append((os.path.join(shop_path, file), shop_folder))
 
-                        try:
-                            filename = os.path.basename(file)
-                            bill_no = filename.replace('_tiqu.xlsx', '')
-                            shop_name = shop_folder
+        if not all_files:
+            logging.info("没有需要入库的文件")
+            update_log("没有需要入库的文件")
+            return
 
-                            imported = False
-                                                        # 一次性读取所有 sheet，避免每个 sheet 单独读文件
-                            xls_cache = pd.read_excel(file_path, sheet_name=None, header=None)
-                            sheet_names = set(xls_cache.keys())
+        total = len(all_files)
+        logging.info(f"共 {total} 个文件，使用 {IMPORT_WORKERS} 个线程并行入库")
+        update_log(f"共 {total} 个文件，{IMPORT_WORKERS} 线程并行...")
 
-                            # 从缓存提取 bill_period，避免重复读文件
-                            bill_period = ''
-                            if '账单总览' in sheet_names:
-                                bill_period = extract_bill_period_from_data(xls_cache['账单总览'])
+        success = 0
+        fail = 0
+        lock = threading.Lock()
 
-                            # 通用重试包装：每个 sheet 用缓存数据直接入库
-                            def _retry_import(import_func, sheet_name, *args):
-                                nonlocal imported
-                                if sheet_name not in sheet_names:
-                                    return
-                                retry_count = 0
-                                max_retries = 3
-                                while retry_count < max_retries:
-                                    try:
-                                        import_func(*args)
-                                        imported = True
-                                        break
-                                    except pyodbc.Error as e:
-                                        if "08S01" in str(e) and retry_count < max_retries - 1:
-                                            retry_count += 1
-                                            logging.warning(f"检测到连接断开 ({retry_count}/{max_retries})，尝试重新连接...")
-                                            update_log(f"检测到连接断开，5 秒后重试 ({retry_count}/{max_retries})...", tab=shop_folder)
-                                            time.sleep(5)
-                                        else:
-                                            raise
+        def _worker(fp, sf):
+            nonlocal success, fail
+            ok = _import_one_file(fp, sf, update_log)
+            with lock:
+                if ok:
+                    success += 1
+                else:
+                    fail += 1
+                done = success + fail
+                if done % 3 == 0 or done == total:
+                    update_log(f"进度: {done}/{total}（成功={success}, 失败={fail}）")
 
-                            with DBConnection() as cursor:
-                                if check_if_imported_new(cursor, bill_no):
-                                    logging.info(f"账单 {bill_no} 已导入新表，跳过")
-                                    update_log(f"账单 {bill_no} 已导入新表，跳过", tab=shop_folder)
-                                    continue
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        with ThreadPoolExecutor(max_workers=IMPORT_WORKERS) as executor:
+            futures = {executor.submit(_worker, fp, sf): (fp, sf) for fp, sf in all_files}
+            for f in as_completed(futures):
+                f.result()  # 传播异常
 
-                                # 5 个多行数据 sheet：提升列名后导入
-                                _retry_import(import_sales_orders, '销售订单', cursor, prepare_df(xls_cache['销售订单']), shop_name, bill_no, bill_period)
-                                _retry_import(import_refund_orders, '退货退款订单', cursor, prepare_df(xls_cache['退货退款订单']), shop_name, bill_no, bill_period)
-                                _retry_import(import_other_fee, '本期结算其他项费用', cursor, prepare_df(xls_cache['本期结算其他项费用']), shop_name, bill_no, bill_period)
-                                _retry_import(import_deduction_detail, '扣减其他费用明细', cursor, prepare_df(xls_cache['扣减其他费用明细']), shop_name, bill_no, bill_period)
-                                _retry_import(import_cargo_damage, '本期货损买进订单', cursor, prepare_df(xls_cache['本期货损买进订单']), shop_name, bill_no, bill_period)
+        logging.info(f"=== 入库结束: 共 {total} 个文件，成功={success}，失败={fail} ===")
+        update_log(f"入库完成: {total} 个文件，成功={success}，失败={fail}")
 
-                                # 账单总览：保持 raw 格式，函数内部自己做列名提升
-                                if '账单总览' in sheet_names:
-                                    _retry_import(import_bill_overview, '账单总览', cursor, xls_cache['账单总览'], shop_name)
-
-                                if imported:
-                                    try:
-                                        record_import_new(cursor, bill_no, shop_name)
-                                        logging.info(f"记录账单 {bill_no} 到新表")
-                                        update_log(f"记录账单 {bill_no} 到新表", tab=shop_folder)
-                                    except Exception as e:
-                                        logging.error(f"记录导入状态失败 {bill_no}: {e}")
-                                        update_log(f"⚠ 数据已入库但状态记录失败: {bill_no}，如补数请先清理 dw_dwd_bill_records_copy1", tab=shop_folder)
-
-                            logging.info(f"文件处理完成: {file_path}")
-                            update_log(f"文件处理完成: {file_path}", tab=shop_folder)
-
-                        except Exception as e:
-                            logging.error(f"处理失败 {file_path}: {str(e)}")
-                            update_log(f"失败: {file_path} - {str(e)}", tab=shop_folder)
-
-        logging.info("=== 账单入库流程结束 ===")
-        update_log("账单入库流程结束")
     except Exception as e:
         logging.error(f"未预期错误: {str(e)}", exc_info=True)
         update_log(f"处理失败: {str(e)}")
@@ -1185,7 +1212,7 @@ def import_sales_orders(cursor, data: pd.DataFrame, shop_name: str, bill_no: str
         logging.info(f"发货时间降级: {fallback_count}/{total_records} 行使用了业务时间")
 
     # 分批插入，每 500 条提交一次，避免事务过长导致连接超时
-    BATCH_SIZE = 1000
+    BATCH_SIZE = 5000
 
     for i in range(0, total_records, BATCH_SIZE):
         batch = records[i:i+BATCH_SIZE]
@@ -1331,7 +1358,7 @@ def import_refund_orders(cursor, data: pd.DataFrame, shop_name: str, bill_no: st
         logging.info(f"发货时间降级: {fallback_count}/{total_records} 行使用了业务时间")
 
     # 分批插入，每 500 条提交一次，避免事务过长导致连接超时
-    BATCH_SIZE = 1000
+    BATCH_SIZE = 5000
 
     for i in range(0, total_records, BATCH_SIZE):
         batch = records[i:i+BATCH_SIZE]
@@ -1471,7 +1498,7 @@ def import_other_fee(cursor, data: pd.DataFrame, shop_name: str, bill_no: str = 
     if total_records == 0:
         return
 
-    BATCH_SIZE = 1000
+    BATCH_SIZE = 5000
     for i in range(0, total_records, BATCH_SIZE):
         batch = records[i:i + BATCH_SIZE]
         cursor.executemany(insert_sql, batch)
@@ -1498,6 +1525,8 @@ def import_deduction_detail(cursor, data: pd.DataFrame, shop_name: str, bill_no:
     """导入扣减其他费用明细"""
     data = data.fillna('').replace(['NaN', 'nan', 'NAN', 'None', 'none', 'NONE'], '')
     field_mapping = DEDUCTION_DETAIL_FIELD_MAPPING
+    # 数值列名（用于识别有效数据行：合计/小标题等非数据行应跳过）
+    _amt_cols = ['偿还总金额', '偿还金额']
 
     columns = ", ".join(field_mapping.values()) + ", ZH, bill_no, bill_period"
     placeholders = ", ".join(["?"] * (len(field_mapping) + 3))
@@ -1505,6 +1534,19 @@ def import_deduction_detail(cursor, data: pd.DataFrame, shop_name: str, bill_no:
 
     records = []
     for _, row in data.iterrows():
+        # 跳过非数据行：数值列含非数字文本 → 该行属于表头/小标题/跨段行
+        is_valid = True
+        for ac in _amt_cols:
+            v = row.get(ac, '')
+            if not is_empty(v):
+                try:
+                    float(v)
+                except (ValueError, TypeError):
+                    is_valid = False
+                    break
+        if not is_valid:
+            continue
+
         record = []
         for excel_header, db_field in field_mapping.items():
             value = row.get(excel_header, '')
@@ -1522,7 +1564,7 @@ def import_deduction_detail(cursor, data: pd.DataFrame, shop_name: str, bill_no:
     if total_records == 0:
         return
 
-    BATCH_SIZE = 1000
+    BATCH_SIZE = 5000
     for i in range(0, total_records, BATCH_SIZE):
         batch = records[i:i + BATCH_SIZE]
         cursor.executemany(insert_sql, batch)
@@ -1563,6 +1605,10 @@ def import_cargo_damage(cursor, data: pd.DataFrame, shop_name: str, bill_no: str
     """导入本期货损买进订单"""
     data = data.fillna('').replace(['NaN', 'nan', 'NAN', 'None', 'none', 'NONE'], '')
     field_mapping = CARGO_DAMAGE_FIELD_MAPPING
+    _amt_cols = ['商品金额（元）', '平台预付款收回金额（元）', '操作服务费（元）',
+                 '认证直发服务费（元）', '技术服务费（元）', '平台基础服务费（元）',
+                 '其中:基础服务费金额（元）', '其中:履约服务费金额（元）', '转账手续费（元）',
+                 '售后无忧服务费（元）']
 
     columns = ", ".join(field_mapping.values()) + ", ZH, bill_no, bill_period"
     placeholders = ", ".join(["?"] * (len(field_mapping) + 3))
@@ -1570,6 +1616,18 @@ def import_cargo_damage(cursor, data: pd.DataFrame, shop_name: str, bill_no: str
 
     records = []
     for _, row in data.iterrows():
+        is_valid = True
+        for ac in _amt_cols:
+            v = row.get(ac, '')
+            if not is_empty(v):
+                try:
+                    float(v)
+                except (ValueError, TypeError):
+                    is_valid = False
+                    break
+        if not is_valid:
+            continue
+
         record = []
         for excel_header, db_field in field_mapping.items():
             value = row.get(excel_header, '')
@@ -1587,7 +1645,7 @@ def import_cargo_damage(cursor, data: pd.DataFrame, shop_name: str, bill_no: str
     if total_records == 0:
         return
 
-    BATCH_SIZE = 1000
+    BATCH_SIZE = 5000
     for i in range(0, total_records, BATCH_SIZE):
         batch = records[i:i + BATCH_SIZE]
         cursor.executemany(insert_sql, batch)

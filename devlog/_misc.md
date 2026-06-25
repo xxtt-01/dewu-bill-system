@@ -25,6 +25,23 @@
   3. **M1**: `total_count` 用 `int()` 包裹，防止 API 返回字符串导致 `TypeError`
   4. **M2**: 签名原文和请求 URL 日志从 `logging.info` 降为 `logging.debug`，避免日志膨胀
 
+## 2026-06-25: 入库并行优化 + 多 Bug 修复
+- **文件:**
+  - `得物对账单_sqlserver版.py`
+  - `得物对账单_历史数据版.py`
+- **原因:** 串行入库 18 个文件需 ~70 分钟，远程 DB 网络延迟是瓶颈；同时修复测试中发现的多个 Bug
+- **决策:**
+  1. **并行入库**: 提取 `_import_one_file` 独立函数，`process_import` 用 `ThreadPoolExecutor(IMPORT_WORKERS=3)` 并行处理，每线程独立 DB 连接
+  2. **BATCH_SIZE 1000→5000**: 减少 commit 次数
+  3. **sheet 缺失保护**: 5 个数据 sheet 加 `if 'sheet名' in sheet_names:` 保护，防止 KeyError
+  4. **扣减/货损行级验证**: 数字列含文本时跳过非数据行（子表头、跨段行），不抛异常
+  5. **`setup_logging` None 保护**: `logger.addHandler(text_handler)` 前判空
+  6. **FutureWarning 抑制**: 加 `warnings.simplefilter('ignore', FutureWarning)`
+  7. **窗口重叠 6 天**: 防止周账单跨边界遗漏
+  8. **自增种子正确重置**: `DBCC CHECKIDENT('tbl', RESEED, 0)` 单引号语法
+  9. **清理测试数据**: 删文件 + 清 8 张表 + 种子归零
+  10. **PRIMARY KEY 约束**: `dw_dzd_xs` 改为 `IDENTITY_INSERT OFF`，依赖自增列
+
 ## 2026-06-25: 时间窗口重叠修复—防止跨边界周账单遗漏
 - **文件:** `得物对账单_历史数据版.py`
 - **原因:** 周账单可能跨窗口边界（如 01-27~02-02），原 logic 首尾相接（01-01~01-31、01-31~03-02），导致跨边界账单在两个窗口都不被 API 包含，遗漏数据
