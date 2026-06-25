@@ -705,7 +705,7 @@ def _import_one_file(file_path: str, shop_folder: str, update_log) -> bool:
                     record_import_new(cursor, bill_no, shop_name)
                 except Exception as e:
                     logging.error(f"记录导入状态失败 {bill_no}: {e}")
-                    update_log(f"⚠ 数据已入库但状态记录失败: {bill_no}")
+                    update_log(f"⚠ 数据已入库但状态记录失败: {bill_no}", tab=shop_name)
 
         return True
 
