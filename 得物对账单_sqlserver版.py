@@ -159,14 +159,21 @@ class QtLogHandler(logging.Handler):
         self.signal.emit("总览", msg)
 
 _logging_initialized = False
+_logging_lock = threading.Lock()
 
 def setup_logging(text_handler) -> str:
     """初始化日志系统并绑定到文本控件"""
     global _logging_initialized
     if _logging_initialized:
-        return logging.getLogger().handlers[0].baseFilename if logging.getLogger().handlers else ""
+        h = logging.getLogger().handlers
+        return h[0].baseFilename if h else ""
 
-    log_file = os.path.join(LOG_DIR, f"dwd_bill_etl_{datetime.now().strftime('%Y%m%d%H%M%S')}.log")
+    with _logging_lock:
+        if _logging_initialized:
+            h = logging.getLogger().handlers
+            return h[0].baseFilename if h else ""
+
+        log_file = os.path.join(LOG_DIR, f"dwd_bill_etl_{datetime.now().strftime('%Y%m%d%H%M%S')}.log")
 
     os.makedirs(os.path.dirname(log_file), exist_ok=True)
 
