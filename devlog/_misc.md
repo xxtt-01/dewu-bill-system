@@ -464,3 +464,15 @@
   5. 移除 AutoRun 内冗余的 `import threading`
   6. 补齐 `closeEvent` 前缺失的空行
 
+## 2026-06-26: 修复 API 参数名错误导致历史批量全窗口空跑
+- **文件:**
+  - `得物对账单_sqlserver版.py`
+  - `得物对账单_历史数据版.py`
+- **原因:** `bill_start_date`/`bill_end_date` 参数名错误，API 忽略后始终返回最新 3 个账单，导致历史批量 23 个窗口中 21 个空跑
+- **根因:** 得物 `period_list` 接口的日期参数是 `bill_start_time`/`bill_end_time`（与响应字段名一致），而非 `bill_start_date`/`bill_end_date`
+- **修复:**
+  1. `get_date_range_params` + `get_default_dates` 参数名修正
+  2. `run_processing_with_logging` 删除与 `run_processing` 重复的"启动/结束"日志
+  3. `setup_logging` 添加全局 `_logging_initialized` 守卫，避免每窗口重复初始化
+- **影响范围:** 两版本同步修复，API 请求参数名变更不影响已有下载记录
+

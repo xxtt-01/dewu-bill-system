@@ -162,8 +162,14 @@ class QtLogHandler(logging.Handler):
         msg = self.formatter.format(record)
         self.signal.emit("总览", msg)
 
+_logging_initialized = False
+
 def setup_logging(text_handler) -> str:
     """初始化日志系统并绑定到文本控件"""
+    global _logging_initialized
+    if _logging_initialized:
+        return logging.getLogger().handlers[0].baseFilename if logging.getLogger().handlers else ""
+
     log_file = os.path.join(LOG_DIR, f"dwd_bill_etl_{datetime.now().strftime('%Y%m%d%H%M%S')}.log")
 
     os.makedirs(os.path.dirname(log_file), exist_ok=True)
@@ -184,7 +190,8 @@ def setup_logging(text_handler) -> str:
     if text_handler:
         logger.addHandler(text_handler)
 
-    logging.info("日志系统初始化完成")  # 新增日志记录
+    _logging_initialized = True
+    logging.info("日志系统初始化完成")
     return log_file
 
 class DBConnection:
@@ -419,8 +426,8 @@ def parse_date(date_str: str) -> datetime:
 def get_date_range_params(start_date: datetime, end_date: datetime) -> dict:
     """根据起止日期生成 API 请求参数"""
     return {
-        "bill_start_date": start_date.strftime("%Y-%m-%d"),
-        "bill_end_date": end_date.strftime("%Y-%m-%d"),
+        "bill_start_time": start_date.strftime("%Y-%m-%d"),
+        "bill_end_time": end_date.strftime("%Y-%m-%d"),
         "bill_no": None,
         "page_no": 1,
         "page_size": 30
@@ -1705,9 +1712,6 @@ def import_bills_with_logging(root, update_log, start_date=None, end_date=None):
 def run_processing_with_logging(root, update_log, start_date=None, end_date=None):
     """运行账单处理流程并更新日志，返回 0=成功 1=失败"""
     try:
-        logging.info("=== 账单处理流程启动 ===")
-        update_log("账单处理流程启动...")
-
         exit_code = run_processing(root, update_log, start_date, end_date)
         return exit_code
 
@@ -1715,8 +1719,6 @@ def run_processing_with_logging(root, update_log, start_date=None, end_date=None
         logging.error(f"未预期错误: {str(e)}", exc_info=True)
         update_log(f"处理失败: {str(e)}")
         return 1
-    finally:
-        update_log("账单处理流程结束")
 
 
 class MainWindow(QMainWindow):
