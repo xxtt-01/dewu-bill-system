@@ -486,4 +486,10 @@
   2. `handlers[0]` 判空防御性写法优化
   3. 标准版 `record_import_new` 失败日志加 `tab=shop_name`，与历史版对齐到店铺标签页
   4. 两版 `process_import` 中 `_worker` 的入库失败日志加 `tab=sf`，对齐到店铺标签页
+  5. `import_bills_with_logging` 删除与 `import_bills` 重复的"启动"日志
+
+## 2026-06-26: 自动运行期间禁止手动按钮
+- **文件:** `得物对账单_sqlserver版.py`
+- **原因:** 自动运行调度过程中用户点击手动按钮可能导致阶段并发（如提纯和入库同时跑）
+- **修复:** `_run_task` 首行检查 `self.auto_run.running`，自动运行中时提示并拒绝执行
 

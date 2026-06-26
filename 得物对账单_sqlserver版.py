@@ -1664,9 +1664,6 @@ def test_db_connection_gui(update_log, msg_signal=None):
 def import_bills_with_logging(root, update_log):
     """运行账单导入流程并更新日志"""
     try:
-        logging.info("=== 本地账单导入流程启动 ===")
-        update_log("本地账单导入流程启动...")
-
         import_bills(root, update_log)
 
     except Exception as e:
@@ -2041,6 +2038,9 @@ class MainWindow(QMainWindow):
 
     def _run_task(self, task_id, task_func):
         """启动后台任务，同一 ID 的任务不可重复运行"""
+        if self.auto_run.running:
+            self._update_log(f"【{task_id}】自动运行中，请先暂停再手动操作")
+            return
         with self._task_lock:
             if task_id in self._running_tasks:
                 self._update_log(f"【{task_id}】正在运行中，请等待完成")
