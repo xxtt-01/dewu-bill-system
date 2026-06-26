@@ -1706,9 +1706,6 @@ def test_db_connection_gui(update_log, msg_signal=None):
 def import_bills_with_logging(root, update_log, start_date=None, end_date=None):
     """运行账单导入流程并更新日志（可选按日期窗口过滤）"""
     try:
-        logging.info("=== 本地账单导入流程启动 ===")
-        update_log("本地账单导入流程启动...")
-
         import_bills(root, update_log, start_date, end_date)
 
     except Exception as e:
