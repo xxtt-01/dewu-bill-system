@@ -2038,10 +2038,10 @@ class MainWindow(QMainWindow):
 
     def _run_task(self, task_id, task_func):
         """启动后台任务，同一 ID 的任务不可重复运行"""
-        if self.auto_run.running:
-            self._update_log(f"【{task_id}】自动运行中，请先暂停再手动操作")
-            return
         with self._task_lock:
+            if self.auto_run.running:
+                self._update_log(f"【{task_id}】自动运行中，请先暂停再手动操作")
+                return
             if task_id in self._running_tasks:
                 self._update_log(f"【{task_id}】正在运行中，请等待完成")
                 return
