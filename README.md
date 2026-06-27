@@ -35,8 +35,8 @@ pip install -r requirements.txt
 ```ini
 # SQL Server 数据库
 DB_SERVER=your_server
-DB_DATABASE=YKYC
-DB_USERNAME=sa
+DB_DATABASE=your_database
+DB_USERNAME=your_username
 DB_PORT=1433
 DB_PASSWORD=your_password
 
